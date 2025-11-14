@@ -8,47 +8,74 @@ This script measures:
 3. CPU memory utilization
 
 Usage:
-    python dataloader_benchmark.py --data_path /path/to/dataset --batch_size 32 --num_workers 4
+    # For local dataset
+    python dataloader_benchmark.py --dataset_type local --data_path /path/to/dataset --batch_size 32 --num_workers 4
+
+    # For HuggingFace streaming dataset
+    python dataloader_benchmark.py --dataset_type huggingface --hf_dataset_name "imagenet-1k" --batch_size 32 --num_workers 4
 """
 
 import argparse
 import copy
 import gc
+import sys
 import time
 
-import psutil
+# Add local torchvision to path (use development version from pytorch/vision)
+_VISION_DIR = "/pytorch/vision/"
+sys.path.insert(0, _VISION_DIR)
 import torchvision
+
+import psutil
+
 import torchvision.transforms as transforms
 from torchvision.models import resnet18
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.dataset import ConcatDataset
 
 
-def get_memory_usage():
+def get_memory_usage(worker_method=None):
     """
-    Get current memory usage in MB. This includes all child processes.
+    Get current memory usage in MB.
+
+    For multiprocessing: Returns PSS of main process + sum of PSS for all child processes.
+    For threading: Returns RSS of main process only (threads share the same address space).
+
+    Args:
+        worker_method: 'thread' or 'multiprocessing' (or None for multiprocessing)
 
     Returns:
         Total memory usage in MB
     """
     process = psutil.Process()
 
-    main_memory = process.memory_full_info().pss
+    if worker_method == "thread":
+        # For threading, use RSS of main process only
+        # Threads share the same address space, so child processes would be misleading
+        main_memory = process.memory_info().rss
+    else:
+        # For multiprocessing, use PSS of main process + children
+        # PSS accounts for shared memory proportionally
+        main_memory = process.memory_full_info().pss
 
-    # Add memory usage of all child processes
-    for child in process.children(recursive=True):
-        try:
-            child_mem = child.memory_full_info().pss
-            main_memory += child_mem
-        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
-            # Process might have terminated or doesn't support PSS, fall back to USS
-            print(f"Failed to get PSS for {child}, falling back to USS")
-            child_mem = child.memory_info().uss
-            main_memory += child_mem
+        # Add memory usage of all child processes
+        for child in process.children(recursive=True):
+            try:
+                child_mem = child.memory_full_info().pss
+                main_memory += child_mem
+            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                # Process might have terminated or doesn't support PSS, fall back to USS
+                print(f"Failed to get PSS for {child}, falling back to USS")
+                try:
+                    child_mem = child.memory_info().uss
+                    main_memory += child_mem
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    # Child might have terminated, skip it
+                    pass
 
     return main_memory / (1024 * 1024)
 
@@ -79,15 +106,18 @@ def create_model():
 
 def benchmark_dataloader(
     dataset,
+    dataset_type,
     batch_size,
     num_workers,
     num_epochs=1,
     max_batches=10,
     multiprocessing_context=None,
+    worker_method=None,
     logging_freq=10,
 ):
     """Benchmark a dataloader with specific configuration."""
     print("\n--- Benchmarking DataLoader ---")
+    print(f"Worker method: {worker_method if worker_method else 'process (default)'}")
 
     # Clear memory before starting
     gc.collect()
@@ -97,26 +127,34 @@ def benchmark_dataloader(
     model = create_model()
 
     # Measure memory before dataloader creation
-    memory_before = get_memory_usage()
+    memory_before = get_memory_usage(worker_method)
     print(f"Memory before DataLoader creation: {memory_before:.2f} MB")
     print_detailed_memory()
 
     # Measure dataloader initialization time
     start = time.perf_counter()
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-        prefetch_factor=2 if num_workers > 0 else None,
-        multiprocessing_context=multiprocessing_context,
-    )
+
+    # Build DataLoader kwargs
+    dataloader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": dataset_type != "huggingface",
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+        "prefetch_factor": 2 if num_workers > 0 else None,
+    }
+
+    if worker_method:
+        dataloader_kwargs["worker_method"] = worker_method
+
+    if worker_method != "thread" and multiprocessing_context:
+        dataloader_kwargs["multiprocessing_context"] = multiprocessing_context
+
+    dataloader = DataLoader(dataset, **dataloader_kwargs)
     it = iter(dataloader)
     dataloader_init_time = time.perf_counter() - start
 
     # Measure memory after dataloader creation
-    memory_after = get_memory_usage()
+    memory_after = get_memory_usage(worker_method)
     print(f"Memory after DataLoader creation: {memory_after:.2f} MB")
     print(f"Memory increase: {memory_after - memory_before:.2f} MB")
 
@@ -177,7 +215,7 @@ def benchmark_dataloader(
             if total_batches % 5 == 0:
                 # Force garbage collection before measuring memory
                 gc.collect()
-                current_memory = get_memory_usage()
+                current_memory = get_memory_usage(worker_method)
 
                 if current_memory > peak_memory:
                     peak_memory = current_memory
@@ -227,11 +265,83 @@ def benchmark_dataloader(
     return results
 
 
+class HuggingFaceStreamingDataset(IterableDataset):
+    """Wrapper for HuggingFace streaming datasets to work with PyTorch DataLoader."""
+
+    def __init__(self, dataset_name, split="train", transform=None, max_samples=None):
+        """
+        Args:
+            dataset_name: Name of the HuggingFace dataset (e.g., "imagenet-1k")
+            split: Dataset split to use (e.g., "train", "validation")
+            transform: Optional transform to apply to images
+            max_samples: Maximum number of samples to fetch (for benchmarking)
+        """
+        try:
+            from datasets import load_dataset
+        except ImportError as err:
+            raise ImportError(
+                "HuggingFace datasets library not installed. "
+                "Install with: pip install datasets"
+            ) from err
+
+        self.dataset_name = dataset_name
+        self.split = split
+        self.transform = transform
+        self.max_samples = max_samples
+
+        self.dataset = load_dataset(
+            dataset_name,
+            split=split,
+            streaming=True,  # This enables streaming without caching
+        )
+
+    def __iter__(self):
+        """Iterate over the streaming dataset."""
+
+        for count, item in enumerate(self.dataset):
+            if self.max_samples is not None and count >= self.max_samples:
+                break
+
+            # This assumes standard image classification format: image and label,
+            # where image is a PIL Image and label is an integer
+            image = item["image"]
+            label = item["label"]
+
+            # Convert grayscale images to RGB to ensure consistent 3-channel format
+            if hasattr(image, "mode") and image.mode != "RGB":
+                image = image.convert("RGB")
+
+            if self.transform is not None:
+                image = self.transform(image)
+
+            yield image, label
+            count += 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark PyTorch DataLoader with different worker methods"
     )
-    parser.add_argument("--data_path", required=True, help="Path to dataset")
+    parser.add_argument(
+        "--dataset_type",
+        choices=["local", "huggingface"],
+        default="local",
+        help="Type of dataset to use",
+    )
+    parser.add_argument("--data_path", help="Path to dataset (for local type)")
+    parser.add_argument(
+        "--hf_dataset_name",
+        help="HuggingFace dataset name (e.g., 'imagenet-1k', 'cifar10')",
+    )
+    parser.add_argument(
+        "--hf_split", default="train", help="HuggingFace dataset split (default: train)"
+    )
+    parser.add_argument(
+        "--hf_max_samples",
+        type=int,
+        default=1000,
+        help="Maximum samples to fetch from HuggingFace streaming dataset",
+    )
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of workers")
     parser.add_argument(
@@ -242,16 +352,22 @@ def main():
     )
     parser.add_argument("--num_epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument(
+        "--worker_method",
+        choices=["multiprocessing", "thread"],
+        default="multiprocessing",
+        help="Worker method to use (multiprocessing or thread)",
+    )
+    parser.add_argument(
         "--multiprocessing_context",
         choices=["fork", "spawn", "forkserver"],
         default="forkserver",
-        help="Multiprocessing context to use (fork, spawn, forkserver)",
+        help="Multiprocessing context to use when worker_method is process (fork, spawn, forkserver)",
     )
     parser.add_argument(
         "--dataset_copies",
         type=int,
         default=1,
-        help="Number of copies of the dataset to concatenate (for testing memory usage)",
+        help="Number of copies of the dataset to concatenate (for testing memory usage, local only)",
     )
     parser.add_argument(
         "--logging_freq",
@@ -260,6 +376,12 @@ def main():
         help="Frequency of logging memory usage during training",
     )
     args = parser.parse_args()
+
+    # Validate arguments
+    if args.dataset_type == "local" and not args.data_path:
+        parser.error("--data_path is required when --dataset_type is local")
+    if args.dataset_type == "huggingface" and not args.hf_dataset_name:
+        parser.error("--hf_dataset_name is required when --dataset_type is huggingface")
 
     # Print system info
     print("System Information:")
@@ -285,27 +407,39 @@ def main():
         ]
     )
 
-    # Load dataset
-    print(f"\nLoading dataset from {args.data_path} ({args.dataset_copies} copies)")
-
-    # Try to load as ImageFolder
-    datasets = []
-    for _ in range(args.dataset_copies):
-        base_dataset = torchvision.datasets.ImageFolder(
-            args.data_path, transform=transform
+    # Load dataset based on type
+    if args.dataset_type == "local":
+        print(
+            f"\nLoading local dataset from {args.data_path} ({args.dataset_copies} copies)"
         )
-        datasets.append(copy.deepcopy(base_dataset))
-        del base_dataset
-    dataset = ConcatDataset(datasets)
+        datasets = []
+        for _ in range(args.dataset_copies):
+            base_dataset = torchvision.datasets.ImageFolder(
+                args.data_path, transform=transform
+            )
+            datasets.append(copy.deepcopy(base_dataset))
+            del base_dataset
+        dataset = ConcatDataset(datasets)
+        print(f"Local dataset size: {len(dataset)}")
 
-    print(f"Dataset size: {len(dataset)}")
+    elif args.dataset_type == "huggingface":
+        print(f"\nLoading HuggingFace streaming dataset: {args.hf_dataset_name}")
+        dataset = HuggingFaceStreamingDataset(
+            dataset_name=args.hf_dataset_name,
+            split=args.hf_split,
+            transform=transform,
+            max_samples=args.hf_max_samples,
+        )
+        print(f"Streaming dataset loaded (max samples: {args.hf_max_samples})")
 
     # Run benchmark with specified worker method
     benchmark_dataloader(
         dataset,
+        args.dataset_type,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         multiprocessing_context=args.multiprocessing_context,
+        worker_method=args.worker_method,
         num_epochs=args.num_epochs,
         max_batches=args.max_batches,
         logging_freq=args.logging_freq,
