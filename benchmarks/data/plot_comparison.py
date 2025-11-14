@@ -161,15 +161,15 @@ def plot_comparison(best_data, output_dir):
         for i, (bs, sps, nw) in enumerate(
             zip(data["batch_sizes"], data["samples_per_sec"], data["num_workers"])
         ):
-            if i % 2 == 0:  # Annotate every other point to avoid clutter
-                ax1.annotate(
-                    f"w={nw}",
-                    xy=(bs, sps),
-                    xytext=(5, 5),
-                    textcoords="offset points",
-                    fontsize=8,
-                    alpha=0.7,
-                )
+            # if i % 2 == 0:  # Annotate every other point to avoid clutter
+            ax1.annotate(
+                f"w={nw}",
+                xy=(bs, sps),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8,
+                alpha=0.7,
+            )
 
     ax1.set_xlabel("Batch Size", fontsize=12, fontweight="bold")
     ax1.set_ylabel("Samples per Second", fontsize=12, fontweight="bold")
@@ -195,6 +195,19 @@ def plot_comparison(best_data, output_dir):
             label=method.capitalize(),
             color=colors[method],
         )
+
+        # Add num_workers annotations
+        for i, (bs, mem, nw) in enumerate(
+            zip(data["batch_sizes"], data["memory_increase"], data["num_workers"])
+        ):
+            ax2.annotate(
+                f"w={nw}",
+                xy=(bs, mem),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8,
+                alpha=0.7,
+            )
 
     # Calculate and annotate memory ratios for each batch size
     # Find common batch sizes between both methods
@@ -251,7 +264,7 @@ def plot_comparison(best_data, output_dir):
     plt.tight_layout()
 
     # Save figure
-    output_path = Path(output_dir) / "comparison_plots_2.png"
+    output_path = Path(output_dir) / "comparison_plots.png"
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     print(f"\nPlots saved to: {output_path}")
 

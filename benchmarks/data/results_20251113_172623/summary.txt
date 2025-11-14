@@ -1,0 +1,723 @@
+Dataloader Benchmark Summary - 20251113_172623
+==========================================
+
+
+worker_method=thread, num_workers=2, batch_size=16
+----------------------------------------
+Memory increase: 8.42 MB
+  Average data loading time: 0.0335 seconds
+  Samples per second: 214.71
+  Memory increase: 604.66 MB
+
+
+worker_method=thread, num_workers=2, batch_size=32
+----------------------------------------
+Memory increase: 8.59 MB
+  Average data loading time: 0.0763 seconds
+  Samples per second: 230.74
+  Memory increase: 792.09 MB
+
+
+worker_method=thread, num_workers=2, batch_size=64
+----------------------------------------
+Memory increase: 8.25 MB
+  Average data loading time: 0.1430 seconds
+  Samples per second: 238.13
+  Memory increase: 794.53 MB
+
+
+worker_method=thread, num_workers=2, batch_size=128
+----------------------------------------
+Memory increase: 8.25 MB
+  Average data loading time: 0.2937 seconds
+  Samples per second: 228.53
+  Memory increase: 1023.93 MB
+
+
+worker_method=thread, num_workers=2, batch_size=256
+----------------------------------------
+Memory increase: 8.59 MB
+  Average data loading time: 0.5918 seconds
+  Samples per second: 224.99
+  Memory increase: 1795.69 MB
+
+
+worker_method=thread, num_workers=2, batch_size=512
+----------------------------------------
+Memory increase: 8.42 MB
+  Average data loading time: 0.9595 seconds
+  Samples per second: 244.58
+  Memory increase: 2650.65 MB
+
+
+worker_method=thread, num_workers=2, batch_size=1024
+----------------------------------------
+Memory increase: 8.42 MB
+  Average data loading time: 1.9588 seconds
+  Samples per second: 240.99
+  Memory increase: 4995.48 MB
+
+
+worker_method=thread, num_workers=2, batch_size=2048
+----------------------------------------
+Memory increase: 8.42 MB
+  Average data loading time: 4.3644 seconds
+  Samples per second: 228.36
+  Memory increase: 9501.39 MB
+
+
+worker_method=thread, num_workers=2, batch_size=3072
+----------------------------------------
+Memory increase: 8.25 MB
+  Average data loading time: 6.1206 seconds
+  Samples per second: 236.57
+  Memory increase: 11167.26 MB
+
+
+worker_method=thread, num_workers=4, batch_size=16
+----------------------------------------
+Memory increase: 8.59 MB
+  Average data loading time: 0.0058 seconds
+  Samples per second: 354.77
+  Memory increase: 751.17 MB
+
+
+worker_method=thread, num_workers=4, batch_size=32
+----------------------------------------
+Memory increase: 8.59 MB
+  Average data loading time: 0.0155 seconds
+  Samples per second: 421.49
+  Memory increase: 981.29 MB
+
+
+worker_method=thread, num_workers=4, batch_size=64
+----------------------------------------
+Memory increase: 8.59 MB
+  Average data loading time: 0.0270 seconds
+  Samples per second: 416.93
+  Memory increase: 1135.75 MB
+
+
+worker_method=thread, num_workers=4, batch_size=128
+----------------------------------------
+Memory increase: 8.77 MB
+  Average data loading time: 0.0487 seconds
+  Samples per second: 403.92
+  Memory increase: 1685.73 MB
+
+
+worker_method=thread, num_workers=4, batch_size=256
+----------------------------------------
+Memory increase: 8.94 MB
+  Average data loading time: 0.0605 seconds
+  Samples per second: 420.16
+  Memory increase: 2912.71 MB
+
+
+worker_method=thread, num_workers=4, batch_size=512
+----------------------------------------
+Memory increase: 8.77 MB
+  Average data loading time: 0.0977 seconds
+  Samples per second: 413.92
+  Memory increase: 5804.49 MB
+
+
+worker_method=thread, num_workers=4, batch_size=1024
+----------------------------------------
+Memory increase: 8.59 MB
+  Average data loading time: 0.1845 seconds
+  Samples per second: 414.14
+  Memory increase: 9206.45 MB
+
+
+worker_method=thread, num_workers=4, batch_size=2048
+----------------------------------------
+Memory increase: 8.59 MB
+  Average data loading time: 0.6407 seconds
+  Samples per second: 387.67
+  Memory increase: 19399.16 MB
+
+
+worker_method=thread, num_workers=4, batch_size=3072
+----------------------------------------
+Memory increase: 8.25 MB
+  Average data loading time: 1.2866 seconds
+  Samples per second: 373.73
+  Memory increase: 23115.89 MB
+
+
+worker_method=thread, num_workers=6, batch_size=16
+----------------------------------------
+Memory increase: 9.11 MB
+  Average data loading time: 0.0053 seconds
+  Samples per second: 344.49
+  Memory increase: 867.22 MB
+
+
+worker_method=thread, num_workers=6, batch_size=32
+----------------------------------------
+Memory increase: 8.94 MB
+  Average data loading time: 0.0146 seconds
+  Samples per second: 412.83
+  Memory increase: 1293.80 MB
+
+
+worker_method=thread, num_workers=6, batch_size=64
+----------------------------------------
+Memory increase: 8.42 MB
+  Average data loading time: 0.0229 seconds
+  Samples per second: 420.20
+  Memory increase: 1420.89 MB
+
+
+worker_method=thread, num_workers=6, batch_size=128
+----------------------------------------
+Memory increase: 8.77 MB
+  Average data loading time: 0.0404 seconds
+  Samples per second: 413.81
+  Memory increase: 2378.73 MB
+
+
+worker_method=thread, num_workers=6, batch_size=256
+----------------------------------------
+Memory increase: 8.77 MB
+  Average data loading time: 0.0719 seconds
+  Samples per second: 414.71
+  Memory increase: 4141.93 MB
+
+
+worker_method=thread, num_workers=6, batch_size=512
+----------------------------------------
+Memory increase: 8.94 MB
+  Average data loading time: 0.1077 seconds
+  Samples per second: 408.79
+  Memory increase: 8665.79 MB
+
+
+worker_method=thread, num_workers=6, batch_size=1024
+----------------------------------------
+Memory increase: 8.77 MB
+  Average data loading time: 0.2014 seconds
+  Samples per second: 405.95
+  Memory increase: 17320.76 MB
+
+
+worker_method=thread, num_workers=6, batch_size=2048
+----------------------------------------
+Memory increase: 8.59 MB
+  Average data loading time: 0.5174 seconds
+  Samples per second: 385.85
+  Memory increase: 29588.58 MB
+
+
+worker_method=thread, num_workers=6, batch_size=3072
+----------------------------------------
+Memory increase: 8.77 MB
+  Average data loading time: 0.9731 seconds
+  Samples per second: 379.21
+  Memory increase: 35423.67 MB
+
+
+worker_method=thread, num_workers=8, batch_size=16
+----------------------------------------
+Memory increase: 9.28 MB
+  Average data loading time: 0.0056 seconds
+  Samples per second: 352.96
+  Memory increase: 1022.79 MB
+
+
+worker_method=thread, num_workers=8, batch_size=32
+----------------------------------------
+Memory increase: 8.42 MB
+  Average data loading time: 0.0150 seconds
+  Samples per second: 408.59
+  Memory increase: 1572.21 MB
+
+
+worker_method=thread, num_workers=8, batch_size=64
+----------------------------------------
+Memory increase: 9.11 MB
+  Average data loading time: 0.0278 seconds
+  Samples per second: 410.49
+  Memory increase: 1774.66 MB
+
+
+worker_method=thread, num_workers=8, batch_size=128
+----------------------------------------
+Memory increase: 8.77 MB
+  Average data loading time: 0.0425 seconds
+  Samples per second: 407.45
+  Memory increase: 3066.26 MB
+
+
+worker_method=thread, num_workers=8, batch_size=256
+----------------------------------------
+Memory increase: 8.94 MB
+  Average data loading time: 0.0754 seconds
+  Samples per second: 407.47
+  Memory increase: 5848.45 MB
+
+
+worker_method=thread, num_workers=8, batch_size=512
+----------------------------------------
+Memory increase: 8.77 MB
+  Average data loading time: 0.1176 seconds
+  Samples per second: 402.33
+  Memory increase: 11533.93 MB
+
+
+worker_method=thread, num_workers=8, batch_size=1024
+----------------------------------------
+Memory increase: 8.25 MB
+  Average data loading time: 0.2648 seconds
+  Samples per second: 396.09
+  Memory increase: 23426.59 MB
+
+
+worker_method=thread, num_workers=8, batch_size=2048
+----------------------------------------
+Memory increase: 8.25 MB
+  Average data loading time: 0.7340 seconds
+  Samples per second: 370.04
+  Memory increase: 42510.72 MB
+
+
+worker_method=thread, num_workers=8, batch_size=3072
+----------------------------------------
+Memory increase: 8.94 MB
+  Average data loading time: 1.4365 seconds
+  Samples per second: 360.06
+  Memory increase: 46680.82 MB
+
+
+worker_method=thread, num_workers=16, batch_size=16
+----------------------------------------
+Memory increase: 9.11 MB
+  Average data loading time: 0.0057 seconds
+  Samples per second: 336.76
+  Memory increase: 1558.34 MB
+
+
+worker_method=thread, num_workers=16, batch_size=32
+----------------------------------------
+Memory increase: 9.11 MB
+  Average data loading time: 0.0216 seconds
+  Samples per second: 365.75
+  Memory increase: 2426.07 MB
+
+
+worker_method=thread, num_workers=16, batch_size=64
+----------------------------------------
+Memory increase: 9.97 MB
+  Average data loading time: 0.0334 seconds
+  Samples per second: 373.97
+  Memory increase: 3342.47 MB
+
+
+worker_method=thread, num_workers=16, batch_size=128
+----------------------------------------
+Memory increase: 9.97 MB
+  Average data loading time: 0.0691 seconds
+  Samples per second: 363.32
+  Memory increase: 5983.11 MB
+
+
+worker_method=thread, num_workers=16, batch_size=256
+----------------------------------------
+Memory increase: 9.11 MB
+  Average data loading time: 0.1236 seconds
+  Samples per second: 361.93
+  Memory increase: 11548.09 MB
+
+
+worker_method=thread, num_workers=16, batch_size=512
+----------------------------------------
+Memory increase: 9.45 MB
+  Average data loading time: 0.2418 seconds
+  Samples per second: 363.94
+  Memory increase: 23200.03 MB
+
+
+worker_method=thread, num_workers=16, batch_size=1024
+----------------------------------------
+Memory increase: 9.28 MB
+  Average data loading time: 0.3853 seconds
+  Samples per second: 359.25
+  Memory increase: 46568.82 MB
+
+
+worker_method=thread, num_workers=16, batch_size=2048
+----------------------------------------
+Memory increase: 9.80 MB
+  Average data loading time: 0.9909 seconds
+  Samples per second: 338.32
+  Memory increase: 69775.81 MB
+
+
+worker_method=thread, num_workers=16, batch_size=3072
+----------------------------------------
+Memory increase: 9.62 MB
+  Average data loading time: 2.3580 seconds
+  Samples per second: 314.18
+  Memory increase: 80769.88 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=16
+----------------------------------------
+Memory increase: 691.43 MB
+  Average data loading time: 0.0111 seconds
+  Samples per second: 354.86
+  Memory increase: 1090.09 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=32
+----------------------------------------
+Memory increase: 689.18 MB
+  Average data loading time: 0.0311 seconds
+  Samples per second: 367.20
+  Memory increase: 1353.33 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=64
+----------------------------------------
+Memory increase: 689.16 MB
+  Average data loading time: 0.0720 seconds
+  Samples per second: 326.05
+  Memory increase: 1477.05 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=128
+----------------------------------------
+Memory increase: 688.92 MB
+  Average data loading time: 0.1718 seconds
+  Samples per second: 294.02
+  Memory increase: 1678.52 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=256
+----------------------------------------
+Memory increase: 689.57 MB
+  Average data loading time: 0.4078 seconds
+  Samples per second: 268.51
+  Memory increase: 2202.67 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=512
+----------------------------------------
+Memory increase: 690.23 MB
+  Average data loading time: 0.8310 seconds
+  Samples per second: 260.57
+  Memory increase: 3113.89 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=1024
+----------------------------------------
+Memory increase: 691.39 MB
+  Average data loading time: 1.7986 seconds
+  Samples per second: 251.30
+  Memory increase: 4831.33 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=2048
+----------------------------------------
+Memory increase: 690.52 MB
+  Average data loading time: 3.4620 seconds
+  Samples per second: 253.96
+  Memory increase: 8169.19 MB
+
+
+worker_method=multiprocessing, num_workers=2, batch_size=3072
+----------------------------------------
+Memory increase: 689.42 MB
+  Average data loading time: 5.3010 seconds
+  Samples per second: 253.13
+  Memory increase: 9482.66 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=16
+----------------------------------------
+Memory increase: 1358.73 MB
+  Average data loading time: 0.0067 seconds
+  Samples per second: 389.74
+  Memory increase: 1820.34 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=32
+----------------------------------------
+Memory increase: 1354.41 MB
+  Average data loading time: 0.0167 seconds
+  Samples per second: 431.61
+  Memory increase: 2077.79 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=64
+----------------------------------------
+Memory increase: 1341.04 MB
+  Average data loading time: 0.0239 seconds
+  Samples per second: 426.13
+  Memory increase: 2357.26 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=128
+----------------------------------------
+Memory increase: 1354.71 MB
+  Average data loading time: 0.0353 seconds
+  Samples per second: 425.56
+  Memory increase: 2871.82 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=256
+----------------------------------------
+Memory increase: 1354.49 MB
+  Average data loading time: 0.0616 seconds
+  Samples per second: 422.08
+  Memory increase: 4245.32 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=512
+----------------------------------------
+Memory increase: 1354.45 MB
+  Average data loading time: 0.0936 seconds
+  Samples per second: 417.43
+  Memory increase: 6717.73 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=1024
+----------------------------------------
+Memory increase: 1354.68 MB
+  Average data loading time: 0.1759 seconds
+  Samples per second: 415.69
+  Memory increase: 11144.49 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=2048
+----------------------------------------
+Memory increase: 1354.83 MB
+  Average data loading time: 0.4327 seconds
+  Samples per second: 406.82
+  Memory increase: 20432.52 MB
+
+
+worker_method=multiprocessing, num_workers=4, batch_size=3072
+----------------------------------------
+Memory increase: 1354.97 MB
+  Average data loading time: 0.8043 seconds
+  Samples per second: 400.84
+  Memory increase: 20355.70 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=16
+----------------------------------------
+Memory increase: 1917.79 MB
+  Average data loading time: 0.0068 seconds
+  Samples per second: 387.29
+  Memory increase: 2593.85 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=32
+----------------------------------------
+Memory increase: 2019.74 MB
+  Average data loading time: 0.0158 seconds
+  Samples per second: 423.30
+  Memory increase: 2833.12 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=64
+----------------------------------------
+Memory increase: 1965.00 MB
+  Average data loading time: 0.0230 seconds
+  Samples per second: 420.93
+  Memory increase: 3544.63 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=128
+----------------------------------------
+Memory increase: 2024.29 MB
+  Average data loading time: 0.0395 seconds
+  Samples per second: 412.99
+  Memory increase: 4561.82 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=256
+----------------------------------------
+Memory increase: 2021.78 MB
+  Average data loading time: 0.0679 seconds
+  Samples per second: 415.13
+  Memory increase: 6533.80 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=512
+----------------------------------------
+Memory increase: 2004.85 MB
+  Average data loading time: 0.0944 seconds
+  Samples per second: 412.86
+  Memory increase: 10254.80 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=1024
+----------------------------------------
+Memory increase: 2020.25 MB
+  Average data loading time: 0.1802 seconds
+  Samples per second: 413.90
+  Memory increase: 17230.61 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=2048
+----------------------------------------
+Memory increase: 1807.34 MB
+  Average data loading time: 0.4602 seconds
+  Samples per second: 401.00
+  Memory increase: 32050.82 MB
+
+
+worker_method=multiprocessing, num_workers=6, batch_size=3072
+----------------------------------------
+Memory increase: 2027.11 MB
+  Average data loading time: 0.7184 seconds
+  Samples per second: 397.47
+  Memory increase: 32877.03 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=16
+----------------------------------------
+Memory increase: 2506.79 MB
+  Average data loading time: 0.0069 seconds
+  Samples per second: 381.23
+  Memory increase: 3331.84 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=32
+----------------------------------------
+Memory increase: 2370.52 MB
+  Average data loading time: 0.0166 seconds
+  Samples per second: 424.42
+  Memory increase: 3644.61 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=64
+----------------------------------------
+Memory increase: 2540.23 MB
+  Average data loading time: 0.0240 seconds
+  Samples per second: 418.57
+  Memory increase: 4569.74 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=128
+----------------------------------------
+Memory increase: 2554.59 MB
+  Average data loading time: 0.0357 seconds
+  Samples per second: 412.38
+  Memory increase: 5871.66 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=256
+----------------------------------------
+Memory increase: 2472.24 MB
+  Average data loading time: 0.0692 seconds
+  Samples per second: 409.11
+  Memory increase: 8259.58 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=512
+----------------------------------------
+Memory increase: 2581.08 MB
+  Average data loading time: 0.0984 seconds
+  Samples per second: 410.00
+  Memory increase: 13654.06 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=1024
+----------------------------------------
+Memory increase: 2540.81 MB
+  Average data loading time: 0.1981 seconds
+  Samples per second: 407.16
+  Memory increase: 23652.65 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=2048
+----------------------------------------
+Memory increase: 2385.26 MB
+  Average data loading time: 0.5063 seconds
+  Samples per second: 394.78
+  Memory increase: 43257.59 MB
+
+
+worker_method=multiprocessing, num_workers=8, batch_size=3072
+----------------------------------------
+Memory increase: 2508.03 MB
+  Average data loading time: 0.9398 seconds
+  Samples per second: 387.62
+  Memory increase: 47157.20 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=16
+----------------------------------------
+Memory increase: 4985.49 MB
+  Average data loading time: 0.0070 seconds
+  Samples per second: 357.48
+  Memory increase: 6295.13 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=32
+----------------------------------------
+Memory increase: 4993.57 MB
+  Average data loading time: 0.0169 seconds
+  Samples per second: 409.07
+  Memory increase: 6871.66 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=64
+----------------------------------------
+Memory increase: 5088.96 MB
+  Average data loading time: 0.0261 seconds
+  Samples per second: 398.87
+  Memory increase: 8768.54 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=128
+----------------------------------------
+Memory increase: 5196.57 MB
+  Average data loading time: 0.0457 seconds
+  Samples per second: 395.31
+  Memory increase: 10904.52 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=256
+----------------------------------------
+Memory increase: 5130.25 MB
+  Average data loading time: 0.0682 seconds
+  Samples per second: 397.25
+  Memory increase: 16680.19 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=512
+----------------------------------------
+Memory increase: 4768.75 MB
+  Average data loading time: 0.1098 seconds
+  Samples per second: 392.29
+  Memory increase: 27131.44 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=1024
+----------------------------------------
+Memory increase: 5182.99 MB
+  Average data loading time: 0.2698 seconds
+  Samples per second: 389.96
+  Memory increase: 48882.17 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=2048
+----------------------------------------
+Memory increase: 4854.61 MB
+  Average data loading time: 0.5941 seconds
+  Samples per second: 361.08
+  Memory increase: 90488.95 MB
+
+
+worker_method=multiprocessing, num_workers=16, batch_size=3072
+----------------------------------------
+Memory increase: 4965.25 MB
+  Average data loading time: 0.9136 seconds
+  Samples per second: 363.10
+  Memory increase: 98399.23 MB
+

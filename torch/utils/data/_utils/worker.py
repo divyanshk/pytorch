@@ -86,6 +86,7 @@ class WorkerInfo:
         seed: Random seed set for this worker
         dataset: Copy of the dataset object in this worker
         rng: RNG state container (set for thread workers only)
+        worker_method: The worker method ("multiprocessing" or "thread")
     """
 
     id: int
@@ -93,6 +94,7 @@ class WorkerInfo:
     seed: int
     dataset: "Dataset"
     rng: Optional["_RNG"] = None
+    worker_method: str = "multiprocessing"
 
 
 def get_worker_info() -> Optional[WorkerInfo]:
@@ -110,6 +112,8 @@ def get_worker_info() -> Optional[WorkerInfo]:
     * :attr:`dataset`: the copy of the dataset object in **this** process/thread. Note
       that this will be a different object in a different process/thread than the one
       in the main process.
+    * :attr:`worker_method`: the worker method being used. Either ``"multiprocessing"``
+      for process-based workers or ``"thread"`` for thread-based workers.
 
     When called in the main process, this returns ``None``.
 
@@ -260,7 +264,7 @@ def _base_worker_loop(
     shared_rng=None,
     is_process=True,
     watchdog_constructor=None,
- ) -> None:
+) -> None:
     """
     Base worker loop with common functionality for both process and thread workers.
     """
@@ -421,6 +425,7 @@ def _process_worker_loop(
         num_workers=num_workers,
         seed=seed,
         dataset=dataset,
+        worker_method="multiprocessing",
     )
 
     global _worker_info
@@ -501,6 +506,7 @@ def _thread_worker_loop(
         seed=seed,
         dataset=dataset,
         rng=rng,  # not set for process workers
+        worker_method="thread",
     )
 
     _thread_local_worker_info.worker_info = worker_info
