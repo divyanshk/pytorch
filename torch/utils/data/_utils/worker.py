@@ -264,6 +264,7 @@ def _base_worker_loop(
     shared_rng=None,
     is_process=True,
     watchdog_constructor=None,
+    pin_memory_in_thread_workers=False,
 ) -> None:
     """
     Base worker loop with common functionality for both process and thread workers.
@@ -348,6 +349,19 @@ def _base_worker_loop(
             else:
                 try:
                     data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+
+                    # Pin memory after fetching if enabled (for thread workers only)
+                    if pin_memory_in_thread_workers and not isinstance(
+                        data, ExceptionWrapper
+                    ):
+                        try:
+                            from . import pin_memory as pin_memory_module
+
+                            data = pin_memory_module.pin_memory(data)
+                        except Exception:
+                            data = ExceptionWrapper(
+                                where=f"in pin_memory for DataLoader {error_prefix} {worker_id}"
+                            )
                 except Exception as e:
                     if (
                         isinstance(e, StopIteration)
@@ -469,11 +483,15 @@ def _thread_worker_loop(
     worker_id,
     num_workers,
     persistent_workers,
+    pin_memory=False,
 ):
     """
     Thread worker loop that uses the common base worker loop for threads.
     Sets up thread-local RNG state and creates deep copies of dataset/transforms
     to avoid race conditions and shared state issues.
+
+    Args:
+        pin_memory: If True, pin memory after fetching data
     """
 
     # Set the thread name for better debugging
@@ -528,4 +546,5 @@ def _thread_worker_loop(
         persistent_workers=persistent_workers,
         is_process=False,
         watchdog_constructor=None,  # No watchdog needed for threads
+        pin_memory_in_thread_workers=pin_memory,
     )

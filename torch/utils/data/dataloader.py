@@ -25,6 +25,7 @@ import torch.distributed as dist
 import torch.utils.data.graph_settings
 from torch._utils import ExceptionWrapper
 from torch.utils.data import _utils
+from torch.utils.data._utils.two_phase_worker import TwoPhaseHybridDataLoaderIter
 from torch.utils.data.datapipes.datapipe import (
     _IterDataPipeSerializationWrapper,
     _MapDataPipeSerializationWrapper,
@@ -298,9 +299,9 @@ class DataLoader(Generic[_T_co]):
         self.timeout = timeout
         self.worker_init_fn = worker_init_fn
 
-        if worker_method not in ["multiprocessing", "thread"]:
+        if worker_method not in ["multiprocessing", "thread", "two_phase_hybrid"]:
             raise ValueError(
-                "worker_method should be either 'multiprocessing' or 'thread'"
+                "worker_method should be 'multiprocessing', 'thread', or 'two_phase_hybrid'"
             )
         self.worker_method = worker_method
         self.multiprocessing_context = multiprocessing_context
@@ -438,6 +439,8 @@ class DataLoader(Generic[_T_co]):
             self.check_worker_number_rationality()
             if self.worker_method == "thread":
                 return _ThreadingDataLoaderIter(self)
+            elif self.worker_method == "two_phase_hybrid":
+                return _TwoPhaseHybridDataLoaderIterWrapper(self)
             else:
                 return _MultiProcessingDataLoaderIter(self)
 
@@ -821,6 +824,7 @@ class _ParallelDataLoaderIter(_BaseDataLoaderIter):
 
         self._prefetch_factor = loader.prefetch_factor
         self._in_order = loader.in_order
+        self._worker_method = loader.worker_method
 
         if self._num_workers <= 0:
             raise AssertionError(
@@ -853,7 +857,7 @@ class _ParallelDataLoaderIter(_BaseDataLoaderIter):
 
     def _initialize_pin_memory(self):
         """Initialize pin memory thread and related queues."""
-        if self._pin_memory:
+        if self._pin_memory and self._worker_method == "multiprocessing":
             self._pin_memory_thread_done_event = threading.Event()
 
             # Queue is not type-annotated
@@ -953,7 +957,7 @@ class _ParallelDataLoaderIter(_BaseDataLoaderIter):
                 raise RuntimeError(
                     f"DataLoader timed out after {self._timeout} seconds"
                 )
-        elif self._pin_memory:
+        elif self._pin_memory and self._worker_method == "multiprocessing":
             while self._pin_memory_thread.is_alive():
                 success, data = self._try_get_data()
                 if success:
@@ -1170,6 +1174,7 @@ class _ThreadingDataLoaderIter(_ParallelDataLoaderIter):
                     i,
                     self._num_workers,
                     self._persistent_workers,
+                    self._pin_memory,
                 ),
                 daemon=True,
             )
@@ -1770,3 +1775,136 @@ class _MultiProcessingDataLoaderIter(_ParallelDataLoaderIter):
         finally:
             if w.is_alive():
                 w.terminate()
+
+
+class _TwoPhaseHybridDataLoaderIterWrapper(_BaseDataLoaderIter):
+    r"""Wrapper for TwoPhaseHybridDataLoaderIter that adapts it to the DataLoader interface.
+
+    This iterator uses a two-phase approach:
+    1. Fetch process with threads: Fetches raw data from dataset
+    2. Transform threads in main process: Applies collate_fn and pins memory
+
+    Workers are split 50/50 between fetch and transform phases.
+    """
+
+    def __init__(self, loader):
+        super().__init__(loader)
+
+        if self._timeout != 0:
+            raise ValueError(
+                "timeout is not supported with worker_method='two_phase_hybrid'"
+            )
+
+        # Split workers 50/50 between fetch and transform
+        # At least 1 worker for each phase
+        num_fetch_workers = max(1, self._num_workers // 2)
+        num_transform_workers = max(1, self._num_workers - num_fetch_workers)
+
+        if loader.multiprocessing_context is None:
+            multiprocessing_context = torch.multiprocessing
+        else:
+            multiprocessing_context = loader.multiprocessing_context
+
+        # Create the underlying two-phase iterator
+        self._iterator = TwoPhaseHybridDataLoaderIter(
+            dataset_kind=self._dataset_kind,
+            dataset=self._dataset,
+            auto_collation=self._auto_collation,
+            collate_fn=self._collate_fn,
+            drop_last=self._drop_last,
+            init_fn=loader.worker_init_fn,
+            num_fetch_workers=num_fetch_workers,
+            num_transform_workers=num_transform_workers,
+            pin_memory=self._pin_memory,
+            raw_data_queue_size=10,  # Default queue size
+            multiprocessing_context=multiprocessing_context,
+        )
+
+        self._send_idx = 0
+        self._rcvd_idx = 0
+        self._task_info = {}
+
+        # Start prefetching
+        prefetch_count = 2 * self._num_workers  # Similar to standard dataloader
+        for _ in range(prefetch_count):
+            self._try_put_index()
+
+    def _try_put_index(self):
+        """Try to put the next index into the queue."""
+        try:
+            index = self._next_index()
+        except StopIteration:
+            return
+
+        self._iterator.put_indices(self._send_idx, index)
+        self._task_info[self._send_idx] = True
+        self._send_idx += 1
+
+    def _next_data(self):
+        """Get the next batch of data."""
+        # Wait for the next result in order
+        while self._rcvd_idx not in self._task_info:
+            # No more tasks to receive
+            if not self._persistent_workers:
+                self._iterator.shutdown()
+            raise StopIteration
+
+        # Get result from the iterator with a maximum retry count to prevent infinite hanging
+        max_retries = 1000  # Prevent infinite loop
+        retries = 0
+        while True:
+            success, data = self._iterator.get_result()
+            if success:
+                idx, batch = data
+                if idx == self._rcvd_idx:
+                    # Got the batch we're waiting for
+                    del self._task_info[idx]
+                    self._rcvd_idx += 1
+                    self._try_put_index()
+
+                    # Handle exceptions
+                    if isinstance(batch, ExceptionWrapper):
+                        batch.reraise()
+
+                    # Handle IterableDataset stop iteration
+                    if isinstance(batch, _utils.worker._IterableDatasetStopIteration):
+                        if not self._persistent_workers:
+                            self._iterator.shutdown()
+                        raise StopIteration
+
+                    return batch
+                else:
+                    # Out of order result - discard and keep waiting for the right one
+                    pass
+            else:
+                # Timeout - check if we should continue waiting
+                retries += 1
+                if retries > max_retries:
+                    # Check if fetch process is still alive
+                    if not self._iterator._fetch_process.is_alive():
+                        raise RuntimeError("Fetch process died unexpectedly")
+                    # Check if any transform workers are alive
+                    alive_workers = sum(
+                        1 for w in self._iterator._transform_workers if w.is_alive()
+                    )
+                    if alive_workers == 0:
+                        raise RuntimeError("All transform workers died unexpectedly")
+                    # Reset retry count if workers are still alive
+                    retries = 0
+
+    def _reset(self, loader, first_iter=False):
+        """Reset the iterator for a new epoch."""
+        super()._reset(loader, first_iter)
+        self._send_idx = 0
+        self._rcvd_idx = 0
+        self._task_info = {}
+
+        # Restart prefetching
+        prefetch_count = 2 * self._num_workers
+        for _ in range(prefetch_count):
+            self._try_put_index()
+
+    def __del__(self):
+        """Cleanup when the iterator is deleted."""
+        if hasattr(self, "_iterator"):
+            self._iterator.shutdown()

@@ -49,6 +49,21 @@ class _MapDatasetFetcher(_BaseDatasetFetcher):
             if hasattr(self.dataset, "__getitems__") and self.dataset.__getitems__:
                 data = self.dataset.__getitems__(possibly_batched_index)
             else:
+                #     from torch.utils.data import get_worker_info
+                #     from concurrent.futures import ThreadPoolExecutor
+
+                #     worker_info = get_worker_info()
+
+                #     if worker_info is not None and worker_info.worker_method == "thread":
+                #         # Use ThreadPoolExecutor for parallel fetching with thread workers
+                #         with ThreadPoolExecutor() as executor:
+                #             data = list(
+                #                 executor.map(
+                #                     lambda idx: self.dataset[idx], possibly_batched_index
+                #                 )
+                #             )
+                #     else:
+                #         # Fallback to sequential fetching for multiprocessing or no workers
                 data = [self.dataset[idx] for idx in possibly_batched_index]
         else:
             data = self.dataset[possibly_batched_index]

@@ -34,7 +34,7 @@ from torchvision.models import resnet18
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 from torch.utils.data.dataset import ConcatDataset
 
 
@@ -265,6 +265,73 @@ def benchmark_dataloader(
     return results
 
 
+class PurePythonCPUTransform:
+    def __init__(self, compute_intensity=100):
+        self.compute_intensity = compute_intensity
+
+    def _is_prime(self, n):
+        if n < 2:
+            return False
+        if n == 2:
+            return True
+        if n % 2 == 0:
+            return False
+
+        # Check odd divisors up to sqrt(n)
+        i = 3
+        while i * i <= n:
+            if n % i == 0:
+                return False
+            i += 2
+        return True
+
+    def _compute_nth_primes(self, n):
+        primes = []
+        candidate = 2
+        while len(primes) < n:
+            if self._is_prime(candidate):
+                primes.append(candidate)
+            candidate += 1
+        return primes
+
+    def __call__(self, img):
+        _ = self._compute_nth_primes(self.compute_intensity)
+
+        return img
+
+
+class DummyImageNetDataset(Dataset):
+    """In-memory dummy dataset that mimics ImageNet images."""
+
+    def __init__(self, num_samples=10000, image_size=(224, 224), num_classes=1000):
+        """
+        Args:
+            num_samples: Number of dummy samples to generate
+            image_size: Size of the images (height, width)
+            num_classes: Number of classes (default: 1000 for ImageNet)
+        """
+
+        self.num_samples = num_samples
+
+        # Images are tensors (C, H, W) to match ImageNet preprocessing
+        self.images = torch.randn(num_samples, 3, image_size[0], image_size[1])
+
+        # Generate random labels
+        self.labels = torch.randint(0, num_classes, (num_samples,))
+
+        memory_size = (
+            self.images.element_size() * self.images.nelement()
+            + self.labels.element_size() * self.labels.nelement()
+        ) / (1024 * 1024)
+        print(f"Dataset memory size: {memory_size:.2f} MB")
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        return self.images[idx], self.labels[idx]
+
+
 class HuggingFaceStreamingDataset(IterableDataset):
     """Wrapper for HuggingFace streaming datasets to work with PyTorch DataLoader."""
 
@@ -324,7 +391,7 @@ def main():
     )
     parser.add_argument(
         "--dataset_type",
-        choices=["local", "huggingface"],
+        choices=["local", "huggingface", "dummy"],
         default="local",
         help="Type of dataset to use",
     )
@@ -341,6 +408,12 @@ def main():
         type=int,
         default=1000,
         help="Maximum samples to fetch from HuggingFace streaming dataset",
+    )
+    parser.add_argument(
+        "--dummy_samples",
+        type=int,
+        default=10000,
+        help="Number of samples in dummy dataset (default: 10000)",
     )
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of workers")
@@ -375,6 +448,17 @@ def main():
         default=10,
         help="Frequency of logging memory usage during training",
     )
+    parser.add_argument(
+        "--use_pure_python_transform",
+        action="store_true",
+        help="Add CPU-intensive pure Python transform (prime computation) to test GIL impact",
+    )
+    parser.add_argument(
+        "--python_compute_intensity",
+        type=int,
+        default=100,
+        help="Intensity of pure Python computation (number of primes to compute, default: 100)",
+    )
     args = parser.parse_args()
 
     # Validate arguments
@@ -398,14 +482,18 @@ def main():
     print(f"  Total system memory: {psutil.virtual_memory().total / (1024**3):.2f} GB")
 
     # Define transforms
-    transform = transforms.Compose(
-        [
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
+    transform_list = [
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+
+    # Add pure Python CPU-intensive transform if requested
+    if args.use_pure_python_transform:
+        transform_list.append(PurePythonCPUTransform(args.python_compute_intensity))
+
+    transform = transforms.Compose(transform_list)
 
     # Load dataset based on type
     if args.dataset_type == "local":
@@ -432,6 +520,13 @@ def main():
         )
         print(f"Streaming dataset loaded (max samples: {args.hf_max_samples})")
 
+    elif args.dataset_type == "dummy":
+        print(
+            f"\nCreating in-memory dummy dataset with {110 * args.batch_size} samples"
+        )
+        dataset = DummyImageNetDataset(num_samples=110 * args.batch_size)
+        print(f"Dummy dataset created with {len(dataset)} samples")
+
     # Run benchmark with specified worker method
     benchmark_dataloader(
         dataset,
@@ -444,6 +539,16 @@ def main():
         max_batches=args.max_batches,
         logging_freq=args.logging_freq,
     )
+
+    # Clean up dataset after benchmark completes
+    if args.dataset_type == "dummy":
+        if hasattr(dataset, "images"):
+            del dataset.images
+        if hasattr(dataset, "labels"):
+            del dataset.labels
+        del dataset
+
+        gc.collect()
 
 
 if __name__ == "__main__":
