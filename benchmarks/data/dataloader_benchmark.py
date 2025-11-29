@@ -28,8 +28,9 @@ import torchvision
 
 import psutil
 
-import torchvision.transforms as transforms
+import torchvision.transforms.v2 as transforms
 from torchvision.models import resnet18
+from torchvision.io import read_image, ImageReadMode
 
 import torch
 import torch.nn as nn
@@ -114,6 +115,8 @@ def benchmark_dataloader(
     multiprocessing_context=None,
     worker_method=None,
     logging_freq=10,
+    record_memory=False,
+    warmup_batches=10,
 ):
     """Benchmark a dataloader with specific configuration."""
     print("\n--- Benchmarking DataLoader ---")
@@ -187,12 +190,12 @@ def benchmark_dataloader(
             except StopIteration:
                 break
 
+            # Capture data fetch time
+            data_load_time = time.perf_counter() - batch_start
+
             # Move data to device
             inputs = inputs.to(device)
             labels = labels.to(device)
-
-            # Capture data fetch time (including sending to device)
-            data_load_time = time.perf_counter() - batch_start
 
             # Forward pass
             outputs = model(inputs)
@@ -212,26 +215,30 @@ def benchmark_dataloader(
             total_time += batch_time
 
             # Update peak memory and log memory usage periodically
-            if total_batches % 5 == 0:
-                # Force garbage collection before measuring memory
-                gc.collect()
-                current_memory = get_memory_usage(worker_method)
+            if record_memory:
+                if total_batches % logging_freq == 0:
+                    # Force garbage collection before measuring memory
+                    # gc.collect()
+                    current_memory = get_memory_usage(worker_method)
 
-                if current_memory > peak_memory:
-                    peak_memory = current_memory
+                    if current_memory > peak_memory:
+                        peak_memory = current_memory
 
-            if total_batches % logging_freq == 0:
-                print(
-                    f"Epoch {epoch + 1}, Batch {total_batches}, "
-                    f"Time: {batch_time:.4f}s, "
-                    f"Memory: {current_memory:.2f} MB"
-                )
+            # if total_batches % logging_freq == 0:
+            #     print(
+            #         f"Epoch {epoch + 1}, Batch {total_batches}, "
+            #         f"Time: {batch_time:.4f}s, "
+            #         f"Memory: {current_memory:.2f} MB"
+            #     )
 
     # Calculate statistics
     avg_data_load_time = (
         total_data_load_time / total_batches if total_batches > 0 else 0
     )
     avg_batch_time = total_time / total_batches if total_batches > 0 else 0
+    samples_per_second_dl = (
+        (total_samples / total_data_load_time) if total_data_load_time > 0 else 0
+    )
     samples_per_second = total_samples / total_time if total_time > 0 else 0
 
     results = {
@@ -248,9 +255,12 @@ def benchmark_dataloader(
 
     print("\nResults:")
     print(f"  DataLoader init time: {dataloader_init_time:.4f} seconds")
-    print(f"  Average data loading time: {avg_data_load_time:.4f} seconds")
+    print(f"  Average data loading time (per batch): {avg_data_load_time:.4f} seconds")
     print(f"  Average batch time: {avg_batch_time:.4f} seconds")
-    print(f"  Samples per second: {samples_per_second:.2f}")
+    print(f"  Total batches: {total_batches}")
+    print(f"  Total samples: {total_samples}")
+    print(f"  Samples per second (data loading): {samples_per_second_dl:.2f}")
+    print(f"  Samples per second (overall throughput): {samples_per_second:.2f}")
     print(f"  Peak memory usage: {peak_memory:.2f} MB")
     print(f"  Memory increase: {peak_memory - memory_before:.2f} MB")
 
@@ -263,6 +273,77 @@ def benchmark_dataloader(
     torch.cuda.empty_cache()
 
     return results
+
+
+class LocalDataset(Dataset):
+    """
+    Dataset that loads images from a local folder structure using torchvision.io.read_image.
+
+    This dataset uses read_image instead of PIL loader, which releases the GIL during decoding.
+    Expected folder structure:
+        root/class_x/xxx.png
+        root/class_x/xxy.png
+        root/class_y/123.png
+        root/class_y/nsdf3.png
+
+    Args:
+        root: Root directory path
+        transform: Optional transform to apply to images
+        target_transform: Optional transform to apply to targets
+    """
+
+    def __init__(self, root, transform=None, target_transform=None):
+        from pathlib import Path
+
+        self.root = Path(root)
+        self.transform = transform
+        self.target_transform = target_transform
+
+        # Find all classes (subdirectories)
+        self.classes = sorted([d.name for d in self.root.iterdir() if d.is_dir()])
+        if not self.classes:
+            raise FileNotFoundError(f"Couldn't find any class folder in {root}.")
+
+        self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
+
+        # Find all image files
+        self.samples = []
+        self.targets = []
+        IMG_EXTENSIONS = (
+            ".jpg",
+            ".jpeg",
+            ".png",
+        )
+
+        for class_name in self.classes:
+            class_dir = self.root / class_name
+            class_idx = self.class_to_idx[class_name]
+
+            for img_path in sorted(class_dir.iterdir()):
+                if img_path.suffix.lower() in IMG_EXTENSIONS:
+                    self.samples.append((str(img_path), class_idx))
+                    self.targets.append(class_idx)
+
+        if not self.samples:
+            raise FileNotFoundError(f"Found no valid image files in {root}")
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+
+        # Use torchvision.io.read_image which releases the GIL
+        # read_image returns a tensor in [C, H, W] format with uint8 dtype
+        image = read_image(path, mode=ImageReadMode.RGB)
+
+        if self.transform is not None:
+            image = self.transform(image)
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return image, target
 
 
 class PurePythonCPUTransform:
@@ -303,18 +384,27 @@ class PurePythonCPUTransform:
 class DummyImageNetDataset(Dataset):
     """In-memory dummy dataset that mimics ImageNet images."""
 
-    def __init__(self, num_samples=10000, image_size=(224, 224), num_classes=1000):
+    def __init__(
+        self,
+        num_samples=10000,
+        image_size=(256, 256),
+        num_classes=1000,
+        transform=None,
+    ):
         """
         Args:
             num_samples: Number of dummy samples to generate
             image_size: Size of the images (height, width)
             num_classes: Number of classes (default: 1000 for ImageNet)
+            transforms: Optional transforms to apply to images
         """
 
         self.num_samples = num_samples
+        self.transform = transform
 
-        # Images are tensors (C, H, W) to match ImageNet preprocessing
-        self.images = torch.randn(num_samples, 3, image_size[0], image_size[1])
+        self.images = torch.randint(
+            0, 256, (num_samples, 3, image_size[0], image_size[1]), dtype=torch.uint8
+        )
 
         # Generate random labels
         self.labels = torch.randint(0, num_classes, (num_samples,))
@@ -329,7 +419,13 @@ class DummyImageNetDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        return self.images[idx], self.labels[idx]
+        image = self.images[idx]
+        label = self.labels[idx]
+
+        if self.transform is not None:
+            image = self.transform(image)
+
+        return image, label
 
 
 class HuggingFaceStreamingDataset(IterableDataset):
@@ -426,7 +522,7 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument(
         "--worker_method",
-        choices=["multiprocessing", "thread"],
+        choices=["multiprocessing", "thread", "two_phase_hybrid"],
         default="multiprocessing",
         help="Worker method to use (multiprocessing or thread)",
     )
@@ -456,8 +552,13 @@ def main():
     parser.add_argument(
         "--python_compute_intensity",
         type=int,
-        default=100,
+        default=1000,
         help="Intensity of pure Python computation (number of primes to compute, default: 100)",
+    )
+    parser.add_argument(
+        "--record_memory",
+        action="store_true",
+        help="Record peak memory usage during benchmark run",
     )
     args = parser.parse_args()
 
@@ -481,11 +582,12 @@ def main():
     print(f"  Physical CPU cores: {psutil.cpu_count(logical=False)}")
     print(f"  Total system memory: {psutil.virtual_memory().total / (1024**3):.2f} GB")
 
-    # Define transforms
     transform_list = [
-        transforms.Resize(256),
+        transforms.ToDtype(
+            torch.float32, scale=True
+        ),  # Convert uint8 to float32 and scale to [0, 1]
+        transforms.Resize(256, antialias=True),
         transforms.CenterCrop(224),
-        transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 
@@ -502,8 +604,9 @@ def main():
         )
         datasets = []
         for _ in range(args.dataset_copies):
-            base_dataset = torchvision.datasets.ImageFolder(
-                args.data_path, transform=transform
+            base_dataset = LocalDataset(
+                args.data_path,
+                transform=transform,
             )
             datasets.append(copy.deepcopy(base_dataset))
             del base_dataset
@@ -522,9 +625,12 @@ def main():
 
     elif args.dataset_type == "dummy":
         print(
-            f"\nCreating in-memory dummy dataset with {110 * args.batch_size} samples"
+            f"\nCreating in-memory dummy dataset with {(args.max_batches + 10) * args.batch_size} samples"
         )
-        dataset = DummyImageNetDataset(num_samples=110 * args.batch_size)
+        dataset = DummyImageNetDataset(
+            num_samples=(args.max_batches + 10) * args.batch_size,
+            transform=transform,
+        )
         print(f"Dummy dataset created with {len(dataset)} samples")
 
     # Run benchmark with specified worker method
@@ -538,6 +644,7 @@ def main():
         num_epochs=args.num_epochs,
         max_batches=args.max_batches,
         logging_freq=args.logging_freq,
+        record_memory=args.record_memory,
     )
 
     # Clean up dataset after benchmark completes

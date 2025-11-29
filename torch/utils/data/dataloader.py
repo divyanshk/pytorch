@@ -1799,6 +1799,8 @@ class _TwoPhaseHybridDataLoaderIterWrapper(_BaseDataLoaderIter):
         # At least 1 worker for each phase
         num_fetch_workers = max(1, self._num_workers // 2)
         num_transform_workers = max(1, self._num_workers - num_fetch_workers)
+        # num_fetch_workers = self._num_workers
+        # num_transform_workers = 4
 
         if loader.multiprocessing_context is None:
             multiprocessing_context = torch.multiprocessing
@@ -1837,22 +1839,41 @@ class _TwoPhaseHybridDataLoaderIterWrapper(_BaseDataLoaderIter):
             return
 
         self._iterator.put_indices(self._send_idx, index)
-        self._task_info[self._send_idx] = True
+        self._task_info[self._send_idx] = (
+            True,
+        )  # Single element tuple indicating task is outstanding
         self._send_idx += 1
 
     def _next_data(self):
         """Get the next batch of data."""
-        # Wait for the next result in order
-        while self._rcvd_idx not in self._task_info:
-            # No more tasks to receive
-            if not self._persistent_workers:
-                self._iterator.shutdown()
-            raise StopIteration
-
-        # Get result from the iterator with a maximum retry count to prevent infinite hanging
-        max_retries = 1000  # Prevent infinite loop
-        retries = 0
         while True:
+            # Wait for the next result in order
+            while self._rcvd_idx not in self._task_info:
+                # No more tasks to receive
+                if not self._persistent_workers:
+                    self._iterator.shutdown()
+                raise StopIteration
+
+            # Check if we already have the data cached (from out-of-order arrival)
+            if len(self._task_info[self._rcvd_idx]) == 2:
+                # Data is already available
+                _, batch = self._task_info.pop(self._rcvd_idx)
+                self._rcvd_idx += 1
+                self._try_put_index()
+
+                # Handle exceptions
+                if isinstance(batch, ExceptionWrapper):
+                    batch.reraise()
+
+                # Handle IterableDataset stop iteration
+                if isinstance(batch, _utils.worker._IterableDatasetStopIteration):
+                    if not self._persistent_workers:
+                        self._iterator.shutdown()
+                    raise StopIteration
+
+                return batch
+
+            # Get result from the iterator
             success, data = self._iterator.get_result()
             if success:
                 idx, batch = data
@@ -1874,23 +1895,12 @@ class _TwoPhaseHybridDataLoaderIterWrapper(_BaseDataLoaderIter):
 
                     return batch
                 else:
-                    # Out of order result - discard and keep waiting for the right one
-                    pass
+                    # Out of order result - store it for later
+                    if idx in self._task_info:
+                        self._task_info[idx] = (True, batch)
             else:
-                # Timeout - check if we should continue waiting
-                retries += 1
-                if retries > max_retries:
-                    # Check if fetch process is still alive
-                    if not self._iterator._fetch_process.is_alive():
-                        raise RuntimeError("Fetch process died unexpectedly")
-                    # Check if any transform workers are alive
-                    alive_workers = sum(
-                        1 for w in self._iterator._transform_workers if w.is_alive()
-                    )
-                    if alive_workers == 0:
-                        raise RuntimeError("All transform workers died unexpectedly")
-                    # Reset retry count if workers are still alive
-                    retries = 0
+                # Timeout - continue waiting
+                pass
 
     def _reset(self, loader, first_iter=False):
         """Reset the iterator for a new epoch."""

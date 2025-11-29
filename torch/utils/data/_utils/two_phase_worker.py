@@ -137,6 +137,14 @@ def _fetch_worker_thread(
                             where=f"in DataLoader fetch worker thread {worker_id}"
                         )
 
+            # # Collate and put into the queue
+            # from torch.utils.data._utils.collate import default_collate
+            # from . import pin_memory as pin_memory_module
+
+            # raw_data_queue.put(
+            #     (idx, pin_memory_module.pin_memory(default_collate(data)))
+            # )
+
             raw_data_queue.put((idx, data))
             del data, idx, index, r
 
@@ -232,10 +240,18 @@ def _transform_worker_loop(
         threading.current_thread().name = f"DataLoader_transform_thread_{worker_id}"
 
         # Main transform loop
-        while True:
+        while not done_event.is_set():
             try:
                 r = raw_data_queue.get(timeout=STATUS_CHECK_INTERVAL)
             except queue.Empty:
+                # Check if we should exit
+                if done_event.is_set():
+                    break
+                continue
+            except Exception:
+                # Handle any other exceptions (e.g., queue closed, deserialization errors)
+                if done_event.is_set():
+                    break
                 continue
 
             if isinstance(r, _ResumeIteration):
@@ -247,7 +263,7 @@ def _transform_worker_loop(
                 break
             elif done_event.is_set():
                 # Skip processing if shutting down
-                continue
+                break
 
             idx, data = r
 
@@ -279,6 +295,8 @@ def _transform_worker_loop(
 
             result_queue.put((idx, transformed_data))
             del transformed_data, data, idx, r
+            # result_queue.put((idx, data))
+            # del data, idx, r
 
     except KeyboardInterrupt:
         pass
@@ -323,7 +341,7 @@ class TwoPhaseHybridDataLoaderIter:
         num_fetch_workers=2,
         num_transform_workers=2,
         pin_memory=False,
-        raw_data_queue_size=10,
+        raw_data_queue_size=1000,
         multiprocessing_context=None,
     ):
         self._dataset_kind = dataset_kind
@@ -395,7 +413,8 @@ class TwoPhaseHybridDataLoaderIter:
             idx: Task index
             indices: Batch indices to fetch
         """
-        self._index_queue.put((idx, indices))
+        if not self._shutdown:
+            self._index_queue.put((idx, indices))
 
     def get_result(self, timeout=STATUS_CHECK_INTERVAL):
         """
@@ -420,28 +439,53 @@ class TwoPhaseHybridDataLoaderIter:
         if not self._shutdown:
             self._shutdown = True
 
-            # Shutdown fetch process
+            # First, shutdown transform workers (they depend on fetch process)
+            self._transform_done_event.set()
+
+            # Drain the raw_data_queue to unblock any waiting transform workers
+            # This prevents them from hanging on queue.get()
+            try:
+                while not self._raw_data_queue.empty():
+                    try:
+                        self._raw_data_queue.get_nowait()
+                    except:
+                        break
+            except:
+                pass
+
+            # Send None signals to transform workers
+            for _ in range(self._num_transform_workers):
+                try:
+                    self._raw_data_queue.put(None, timeout=0.1)
+                except:
+                    pass
+
+            # Wait for transform workers to finish
+            for w in self._transform_workers:
+                w.join(timeout=STATUS_CHECK_INTERVAL)
+
+            # Now shutdown fetch process
             self._fetch_done_event.set()
             for _ in range(self._num_fetch_workers):
-                self._index_queue.put(None)
+                try:
+                    self._index_queue.put(None, timeout=0.1)
+                except:
+                    pass
 
             # Wait for fetch process to finish
             self._fetch_process.join(timeout=5.0)
             if self._fetch_process.is_alive():
                 self._fetch_process.terminate()
 
-            # Shutdown transform workers
-            self._transform_done_event.set()
-            for _ in range(self._num_transform_workers):
-                self._raw_data_queue.put(None)
-
-            # Wait for transform workers to finish
-            for w in self._transform_workers:
-                w.join(timeout=STATUS_CHECK_INTERVAL)
-
             # Close queues
-            self._index_queue.close()
-            self._raw_data_queue.close()
+            try:
+                self._index_queue.close()
+            except:
+                pass
+            try:
+                self._raw_data_queue.close()
+            except:
+                pass
 
     def __del__(self):
         """Cleanup when iterator is deleted."""
