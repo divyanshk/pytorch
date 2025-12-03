@@ -13,11 +13,12 @@ from matplotlib.ticker import FuncFormatter
 
 def parse_summary_file(filepath):
     """
-    Parse the summary.txt file and extract metrics.
+    Parse the summary file and extract metrics.
 
     Returns:
         dict: Nested dict with structure:
               {worker_method: {batch_size: [(num_workers, samples_per_sec, final_memory_increase)]}}
+              Note: final_memory_increase may be None if not present in file
     """
     data = {}
 
@@ -54,22 +55,25 @@ def parse_summary_file(filepath):
         memory_increases = []
 
         for line in lines[1:]:
-            # Extract samples per second
-            if "Samples per second:" in line:
-                samples_match = re.search(r"Samples per second:\s+([\d.]+)", line)
-                if samples_match:
-                    samples_per_sec = float(samples_match.group(1))
+            # Extract samples per second (overall throughput)
+            if "Samples per second (overall throughput):" in line:
+                throughput_match = re.search(
+                    r"Samples per second \(overall throughput\):\s+([\d.]+)", line
+                )
+                if throughput_match:
+                    samples_per_sec = float(throughput_match.group(1))
 
-            # Extract all memory increase values
+            # Extract all memory increase values (if present)
             if "Memory increase:" in line:
                 mem_match = re.search(r"Memory increase:\s+([\d.]+)\s+MB", line)
                 if mem_match:
                     memory_increases.append(float(mem_match.group(1)))
 
-        # The last memory increase value is the final one
+        # The last memory increase value is the final one (may be None)
         final_memory_increase = memory_increases[-1] if memory_increases else None
 
-        if samples_per_sec is not None and final_memory_increase is not None:
+        # Store data if we have at least throughput data
+        if samples_per_sec is not None:
             # Store data
             if worker_method not in data:
                 data[worker_method] = {}
@@ -83,10 +87,14 @@ def parse_summary_file(filepath):
     return data
 
 
-def select_best_configs(data):
+def select_best_configs(data, max_workers=16):
     """
     For each (worker_method, batch_size) pair, select the configuration
-    with the highest samples per second.
+    with the highest samples per second from configurations with num_workers <= max_workers.
+
+    Args:
+        data: Parsed data from summary file
+        max_workers: Maximum number of workers to consider (default: 16)
 
     Returns:
         dict: {worker_method: {batch_size: (num_workers, samples_per_sec, final_memory_increase)}}
@@ -97,8 +105,17 @@ def select_best_configs(data):
         best_data[worker_method] = {}
 
         for batch_size, configs in batch_data.items():
+            # Filter configs to only include those with num_workers <= max_workers
+            filtered_configs = [c for c in configs if c[0] <= max_workers]
+
+            if not filtered_configs:
+                # Skip this batch_size if no configs meet the criteria
+                continue
+
             # Find config with highest samples per second
-            best_config = max(configs, key=lambda x: x[1])  # x[1] is samples_per_sec
+            best_config = max(
+                filtered_configs, key=lambda x: x[1]
+            )  # x[1] is samples_per_sec
             best_data[worker_method][batch_size] = best_config
 
     return best_data
@@ -106,7 +123,7 @@ def select_best_configs(data):
 
 def plot_comparison(best_data, output_dir):
     """
-    Create two comparison plots: throughput and memory increase.
+    Create comparison plots: throughput and memory increase (if available).
     """
     # Prepare data for plotting
     methods = sorted(best_data.keys())
@@ -119,6 +136,7 @@ def plot_comparison(best_data, output_dir):
 
     # Extract data for each method
     plot_data = {}
+    has_memory_data = False
     for method in methods:
         plot_data[method] = {
             "batch_sizes": [],
@@ -136,13 +154,23 @@ def plot_comparison(best_data, output_dir):
                 plot_data[method]["samples_per_sec"].append(samples_per_sec)
                 plot_data[method]["memory_increase"].append(memory_increase)
                 plot_data[method]["num_workers"].append(num_workers)
+                if memory_increase is not None:
+                    has_memory_data = True
 
-    # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    # Create figure with appropriate number of subplots
+    if has_memory_data:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    else:
+        fig, ax1 = plt.subplots(1, 1, figsize=(10, 6))
+        ax2 = None
 
     # Define colors and markers
-    colors = {"multiprocessing": "#1f77b4", "thread": "#ff7f0e"}
-    markers = {"multiprocessing": "o", "thread": "s"}
+    colors = {
+        "multiprocessing": "#1f77b4",
+        "thread": "#ff7f0e",
+        "process_with_threads": "#2ca02c",
+    }
+    markers = {"multiprocessing": "o", "thread": "s", "process_with_threads": "*"}
 
     # Plot 1: Samples per Second vs Batch Size
     for method in methods:
@@ -183,83 +211,84 @@ def plot_comparison(best_data, output_dir):
     ax1.set_xscale("log", base=2)
     ax1.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{int(x)}"))
 
-    # Plot 2: Memory Increase vs Batch Size
-    for method in methods:
-        data = plot_data[method]
-        ax2.plot(
-            data["batch_sizes"],
-            data["memory_increase"],
-            marker=markers[method],
-            markersize=8,
-            linewidth=2,
-            label=method.capitalize(),
-            color=colors[method],
-        )
-
-        # Add num_workers annotations
-        for i, (bs, mem, nw) in enumerate(
-            zip(data["batch_sizes"], data["memory_increase"], data["num_workers"])
-        ):
-            ax2.annotate(
-                f"w={nw}",
-                xy=(bs, mem),
-                xytext=(5, 5),
-                textcoords="offset points",
-                fontsize=8,
-                alpha=0.7,
+    # Plot 2: Memory Increase vs Batch Size (if data available)
+    if has_memory_data and ax2 is not None:
+        for method in methods:
+            data = plot_data[method]
+            ax2.plot(
+                data["batch_sizes"],
+                data["memory_increase"],
+                marker=markers[method],
+                markersize=8,
+                linewidth=2,
+                label=method.capitalize(),
+                color=colors[method],
             )
 
-    # Calculate and annotate memory ratios for each batch size
-    # Find common batch sizes between both methods
-    if "multiprocessing" in plot_data and "thread" in plot_data:
-        mp_bs = plot_data["multiprocessing"]["batch_sizes"]
-        mp_mem = plot_data["multiprocessing"]["memory_increase"]
-        th_bs = plot_data["thread"]["batch_sizes"]
-        th_mem = plot_data["thread"]["memory_increase"]
-
-        # Create dictionaries for easy lookup
-        mp_dict = dict(zip(mp_bs, mp_mem))
-        th_dict = dict(zip(th_bs, th_mem))
-
-        # Find common batch sizes and annotate ratios
-        common_batch_sizes = set(mp_bs) & set(th_bs)
-
-        for bs in sorted(common_batch_sizes):
-            mp_memory = mp_dict[bs]
-            th_memory = th_dict[bs]
-            ratio = mp_memory / th_memory if th_memory > 0 else 0
-
-            # Position annotation between the two lines
-            mid_y = (mp_memory + th_memory) / 2
-
-            ax2.annotate(
-                f"{ratio:.1f}x",
-                xy=(bs, mid_y),
-                xytext=(0, 0),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                ha="center",
-                va="center",
-                bbox=dict(
-                    boxstyle="round,pad=0.3",
-                    facecolor="yellow",
-                    edgecolor="orange",
+            # Add num_workers annotations
+            for i, (bs, mem, nw) in enumerate(
+                zip(data["batch_sizes"], data["memory_increase"], data["num_workers"])
+            ):
+                ax2.annotate(
+                    f"w={nw}",
+                    xy=(bs, mem),
+                    xytext=(5, 5),
+                    textcoords="offset points",
+                    fontsize=8,
                     alpha=0.7,
-                ),
-            )
+                )
 
-    ax2.set_xlabel("Batch Size", fontsize=12, fontweight="bold")
-    ax2.set_ylabel("Memory Increase (MB)", fontsize=12, fontweight="bold")
-    ax2.set_title(
-        "Memory Usage Comparison\n(Best num_workers selected for each point)",
-        fontsize=14,
-        fontweight="bold",
-    )
-    ax2.legend(fontsize=11)
-    ax2.grid(True, alpha=0.3)
-    ax2.set_xscale("log", base=2)
-    ax2.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{int(x)}"))
+        # Calculate and annotate memory ratios for each batch size
+        # Find common batch sizes between both methods
+        if "multiprocessing" in plot_data and "thread" in plot_data:
+            mp_bs = plot_data["multiprocessing"]["batch_sizes"]
+            mp_mem = plot_data["multiprocessing"]["memory_increase"]
+            th_bs = plot_data["thread"]["batch_sizes"]
+            th_mem = plot_data["thread"]["memory_increase"]
+
+            # Create dictionaries for easy lookup
+            mp_dict = dict(zip(mp_bs, mp_mem))
+            th_dict = dict(zip(th_bs, th_mem))
+
+            # Find common batch sizes and annotate ratios
+            common_batch_sizes = set(mp_bs) & set(th_bs)
+
+            for bs in sorted(common_batch_sizes):
+                mp_memory = mp_dict[bs]
+                th_memory = th_dict[bs]
+                ratio = mp_memory / th_memory if th_memory > 0 else 0
+
+                # Position annotation between the two lines
+                mid_y = (mp_memory + th_memory) / 2
+
+                ax2.annotate(
+                    f"{ratio:.1f}x",
+                    xy=(bs, mid_y),
+                    xytext=(0, 0),
+                    textcoords="offset points",
+                    fontsize=9,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    bbox=dict(
+                        boxstyle="round,pad=0.3",
+                        facecolor="yellow",
+                        edgecolor="orange",
+                        alpha=0.7,
+                    ),
+                )
+
+        ax2.set_xlabel("Batch Size", fontsize=12, fontweight="bold")
+        ax2.set_ylabel("Memory Increase (MB)", fontsize=12, fontweight="bold")
+        ax2.set_title(
+            "Memory Usage Comparison\n(Best num_workers selected for each point)",
+            fontsize=14,
+            fontweight="bold",
+        )
+        ax2.legend(fontsize=11)
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xscale("log", base=2)
+        ax2.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{int(x)}"))
 
     plt.tight_layout()
 
@@ -274,9 +303,14 @@ def plot_comparison(best_data, output_dir):
     print("\n" + "=" * 80)
     print("SUMMARY: Best Configuration for Each Batch Size")
     print("=" * 80)
-    print(
-        f"\n{'Method':<20} {'Batch Size':<12} {'Workers':<10} {'Throughput (sps)':<20} {'Memory (MB)':<15}"
-    )
+    if has_memory_data:
+        print(
+            f"\n{'Method':<20} {'Batch Size':<12} {'Workers':<10} {'Throughput (sps)':<20} {'Memory (MB)':<15}"
+        )
+    else:
+        print(
+            f"\n{'Method':<20} {'Batch Size':<12} {'Workers':<10} {'Throughput (sps)':<20}"
+        )
     print("-" * 80)
 
     for method in methods:
@@ -287,7 +321,10 @@ def plot_comparison(best_data, output_dir):
             data["memory_increase"],
             data["num_workers"],
         ):
-            print(f"{method:<20} {bs:<12} {nw:<10} {sps:<20.2f} {mem:<15.2f}")
+            if has_memory_data and mem is not None:
+                print(f"{method:<20} {bs:<12} {nw:<10} {sps:<20.2f} {mem:<15.2f}")
+            else:
+                print(f"{method:<20} {bs:<12} {nw:<10} {sps:<20.2f}")
         print("-" * 80)
 
     # Print comparison insights
@@ -314,16 +351,21 @@ def plot_comparison(best_data, output_dir):
             f"({'multiprocessing' if throughput_diff > 0 else 'threading'} is faster)"
         )
 
-        # Compare memory
-        avg_mp_memory = np.mean(mp_data["memory_increase"])
-        avg_th_memory = np.mean(th_data["memory_increase"])
-        memory_ratio = avg_mp_memory / avg_th_memory
+        # Compare memory (if available)
+        if has_memory_data:
+            mp_memory_vals = [m for m in mp_data["memory_increase"] if m is not None]
+            th_memory_vals = [m for m in th_data["memory_increase"] if m is not None]
 
-        print(f"\n• Average memory (multiprocessing): {avg_mp_memory:.2f} MB")
-        print(f"• Average memory (threading): {avg_th_memory:.2f} MB")
-        print(
-            f"• Memory ratio: {memory_ratio:.2f}x (multiprocessing uses {memory_ratio:.2f}x more memory)"
-        )
+            if mp_memory_vals and th_memory_vals:
+                avg_mp_memory = np.mean(mp_memory_vals)
+                avg_th_memory = np.mean(th_memory_vals)
+                memory_ratio = avg_mp_memory / avg_th_memory
+
+                print(f"\n• Average memory (multiprocessing): {avg_mp_memory:.2f} MB")
+                print(f"• Average memory (threading): {avg_th_memory:.2f} MB")
+                print(
+                    f"• Memory ratio: {memory_ratio:.2f}x (multiprocessing uses {memory_ratio:.2f}x more memory)"
+                )
 
 
 def main():

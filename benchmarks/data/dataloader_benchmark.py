@@ -20,6 +20,7 @@ import copy
 import gc
 import sys
 import time
+from contextlib import nullcontext
 
 # Add local torchvision to path (use development version from pytorch/vision)
 _VISION_DIR = "/pytorch/vision/"
@@ -37,6 +38,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 from torch.utils.data.dataset import ConcatDataset
+from torch.profiler import profile, ProfilerActivity
 
 
 def get_memory_usage(worker_method=None):
@@ -116,7 +118,7 @@ def benchmark_dataloader(
     worker_method=None,
     logging_freq=10,
     record_memory=False,
-    warmup_batches=10,
+    enable_profiler=False,
 ):
     """Benchmark a dataloader with specific configuration."""
     print("\n--- Benchmarking DataLoader ---")
@@ -181,55 +183,76 @@ def benchmark_dataloader(
         f"\nStarting training loop with {num_epochs} epochs (max {max_batches} batches per epoch)"
     )
 
-    for epoch in range(num_epochs):
-        while total_batches < max_batches:
-            batch_start = time.perf_counter()
+    with (
+        profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            on_trace_ready=lambda p: p.export_chrome_trace("trace.json"),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+        ) if enable_profiler else nullcontext()
+    ) as prof:
+        for epoch in range(num_epochs):
+            while total_batches < max_batches:
+                batch_start = time.perf_counter()
 
-            try:
-                inputs, labels = next(it)
-            except StopIteration:
-                break
+                try:
+                    inputs, labels = next(it)
+                except StopIteration:
+                    break
 
-            # Capture data fetch time
-            data_load_time = time.perf_counter() - batch_start
+                # Capture data fetch time
+                data_load_time = time.perf_counter() - batch_start
 
-            # Move data to device
-            inputs = inputs.to(device)
-            labels = labels.to(device)
+                # Move data to device
+                inputs = inputs.to(device)
+                labels = labels.to(device)
 
-            # Forward pass
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
+                # Forward pass
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
 
-            # Backward and optimize
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                # Backward and optimize
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-            # Capture batch time
-            batch_time = time.perf_counter() - batch_start
+                # Capture batch time
+                batch_time = time.perf_counter() - batch_start
 
-            total_batches += 1
-            total_samples += inputs.size(0)
-            total_data_load_time += data_load_time
-            total_time += batch_time
+                total_batches += 1
+                total_samples += inputs.size(0)
+                total_data_load_time += data_load_time
+                total_time += batch_time
 
-            # Update peak memory and log memory usage periodically
-            if record_memory:
-                if total_batches % logging_freq == 0:
-                    # Force garbage collection before measuring memory
-                    # gc.collect()
-                    current_memory = get_memory_usage(worker_method)
+                # Update peak memory and log memory usage periodically
+                if record_memory:
+                    if total_batches % logging_freq == 0:
+                        # Force garbage collection before measuring memory
+                        # gc.collect()
+                        current_memory = get_memory_usage(worker_method)
 
-                    if current_memory > peak_memory:
-                        peak_memory = current_memory
+                        if current_memory > peak_memory:
+                            peak_memory = current_memory
 
-            # if total_batches % logging_freq == 0:
-            #     print(
-            #         f"Epoch {epoch + 1}, Batch {total_batches}, "
-            #         f"Time: {batch_time:.4f}s, "
-            #         f"Memory: {current_memory:.2f} MB"
-            #     )
+                # if total_batches % logging_freq == 0:
+                #     print(
+                #         f"Epoch {epoch + 1}, Batch {total_batches}, "
+                #         f"Time: {batch_time:.4f}s, "
+                #         f"Memory: {current_memory:.2f} MB"
+                #     )
+
+                # Step the profiler
+                if enable_profiler:
+                    prof.step()
+
+    if enable_profiler:
+        # Print profiler summary
+        print("\n--- Profiler Summary ---")
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=5))
+        print("\nCUDA time breakdown:")
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=5))
+        print("\nTrace exported to trace.json")
 
     # Calculate statistics
     avg_data_load_time = (
@@ -522,7 +545,11 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument(
         "--worker_method",
-        choices=["multiprocessing", "thread", "two_phase_hybrid"],
+        choices=[
+            "multiprocessing",
+            "thread",
+            "process_with_threads",
+        ],
         default="multiprocessing",
         help="Worker method to use (multiprocessing or thread)",
     )
@@ -559,6 +586,11 @@ def main():
         "--record_memory",
         action="store_true",
         help="Record peak memory usage during benchmark run",
+    )
+    parser.add_argument(
+        "--enable_profiler",
+        action="store_true",
+        help="Enable profiling with torch.profiler",
     )
     args = parser.parse_args()
 
@@ -645,6 +677,7 @@ def main():
         max_batches=args.max_batches,
         logging_freq=args.logging_freq,
         record_memory=args.record_memory,
+        enable_profiler=args.enable_profiler,
     )
 
     # Clean up dataset after benchmark completes

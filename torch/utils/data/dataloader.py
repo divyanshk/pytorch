@@ -25,7 +25,6 @@ import torch.distributed as dist
 import torch.utils.data.graph_settings
 from torch._utils import ExceptionWrapper
 from torch.utils.data import _utils
-from torch.utils.data._utils.two_phase_worker import TwoPhaseHybridDataLoaderIter
 from torch.utils.data.datapipes.datapipe import (
     _IterDataPipeSerializationWrapper,
     _MapDataPipeSerializationWrapper,
@@ -266,6 +265,7 @@ class DataLoader(Generic[_T_co]):
         persistent_workers: bool = False,
         pin_memory_device: str = "",
         in_order: bool = True,
+        mini_batch_size: Optional[int] = None,
     ) -> None:
         torch._C._log_api_usage_once("python.data_loader")
 
@@ -299,9 +299,13 @@ class DataLoader(Generic[_T_co]):
         self.timeout = timeout
         self.worker_init_fn = worker_init_fn
 
-        if worker_method not in ["multiprocessing", "thread", "two_phase_hybrid"]:
+        if worker_method not in [
+            "multiprocessing",
+            "thread",
+            "process_with_threads",
+        ]:
             raise ValueError(
-                "worker_method should be 'multiprocessing', 'thread', or 'two_phase_hybrid'"
+                "worker_method should be 'multiprocessing', 'thread', or 'process_with_threads'"
             )
         self.worker_method = worker_method
         self.multiprocessing_context = multiprocessing_context
@@ -421,6 +425,22 @@ class DataLoader(Generic[_T_co]):
         self.collate_fn = collate_fn
         self.persistent_workers = persistent_workers
 
+        # ===== START MINI-BATCH FEATURE =====
+        # Validate mini_batch_size
+        if mini_batch_size is not None:
+            if worker_method != "process_with_threads":
+                raise ValueError(
+                    "mini_batch_size is only supported with worker_method='process_with_threads'"
+                )
+            if mini_batch_size <= 0:
+                raise ValueError("mini_batch_size must be positive")
+            if batch_size is not None and mini_batch_size > batch_size:
+                raise ValueError(
+                    f"mini_batch_size ({mini_batch_size}) cannot be larger than batch_size ({batch_size})"
+                )
+        self.mini_batch_size = mini_batch_size
+        # ===== END MINI-BATCH FEATURE =====
+
         self.__initialized = True
         self._IterableDataset_len_called = (
             None  # See NOTE [ IterableDataset and __len__ ]
@@ -439,8 +459,8 @@ class DataLoader(Generic[_T_co]):
             self.check_worker_number_rationality()
             if self.worker_method == "thread":
                 return _ThreadingDataLoaderIter(self)
-            elif self.worker_method == "two_phase_hybrid":
-                return _TwoPhaseHybridDataLoaderIterWrapper(self)
+            elif self.worker_method == "process_with_threads":
+                return _ProcessWithThreadsDataLoaderIter(self)
             else:
                 return _MultiProcessingDataLoaderIter(self)
 
@@ -857,7 +877,10 @@ class _ParallelDataLoaderIter(_BaseDataLoaderIter):
 
     def _initialize_pin_memory(self):
         """Initialize pin memory thread and related queues."""
-        if self._pin_memory and self._worker_method == "multiprocessing":
+        if self._pin_memory and self._worker_method in (
+            "multiprocessing",
+            "process_with_threads",
+        ):
             self._pin_memory_thread_done_event = threading.Event()
 
             # Queue is not type-annotated
@@ -957,7 +980,10 @@ class _ParallelDataLoaderIter(_BaseDataLoaderIter):
                 raise RuntimeError(
                     f"DataLoader timed out after {self._timeout} seconds"
                 )
-        elif self._pin_memory and self._worker_method == "multiprocessing":
+        elif self._pin_memory and self._worker_method in (
+            "multiprocessing",
+            "process_with_threads",
+        ):
             while self._pin_memory_thread.is_alive():
                 success, data = self._try_get_data()
                 if success:
@@ -1154,16 +1180,18 @@ class _ThreadingDataLoaderIter(_ParallelDataLoaderIter):
         self._shutdown = False
         self._workers_done_event = threading.Event()
 
+        self._shared_index_queue = queue.SimpleQueue()
+
         self._index_queues = []
         self._workers = []
         for i in range(self._num_workers):
-            index_queue = queue.SimpleQueue()
+            # All workers share the same index queue
             w = threading.Thread(
                 target=_utils.worker._thread_worker_loop,
                 args=(
                     self._dataset_kind,
                     self._dataset,
-                    index_queue,
+                    self._shared_index_queue,  # All threads read from shared queue
                     self._worker_result_queue,
                     self._workers_done_event,
                     self._auto_collation,
@@ -1175,11 +1203,13 @@ class _ThreadingDataLoaderIter(_ParallelDataLoaderIter):
                     self._num_workers,
                     self._persistent_workers,
                     self._pin_memory,
+                    "thread",  # worker_method (threads run in main process)
                 ),
                 daemon=True,
             )
             w.start()
-            self._index_queues.append(index_queue)
+            # Store the shared queue for each worker for compatibility with _ParallelDataLoaderIter
+            self._index_queues.append(self._shared_index_queue)
             self._workers.append(w)
 
         self._initialize_pin_memory()
@@ -1777,144 +1807,364 @@ class _MultiProcessingDataLoaderIter(_ParallelDataLoaderIter):
                 w.terminate()
 
 
-class _TwoPhaseHybridDataLoaderIterWrapper(_BaseDataLoaderIter):
-    r"""Wrapper for TwoPhaseHybridDataLoaderIter that adapts it to the DataLoader interface.
+class _ProcessWithThreadsDataLoaderIter(_ParallelDataLoaderIter):
+    """Iterates once over the DataLoader's dataset using a single process that internally manages multiple threads.
 
-    This iterator uses a two-phase approach:
-    1. Fetch process with threads: Fetches raw data from dataset
-    2. Transform threads in main process: Applies collate_fn and pins memory
-
-    Workers are split 50/50 between fetch and transform phases.
+    This is a hybrid approach where:
+    1. Main process spawns a single coordinator process
+    2. Coordinator process creates multiple internal worker threads
+    3. Communication between main and coordinator uses multiprocessing.Queue
+    4. Threads within the coordinator process use the multiprocessing.Queue to read index and write data
     """
 
     def __init__(self, loader):
         super().__init__(loader)
-
-        if self._timeout != 0:
-            raise ValueError(
-                "timeout is not supported with worker_method='two_phase_hybrid'"
-            )
-
-        # Split workers 50/50 between fetch and transform
-        # At least 1 worker for each phase
-        num_fetch_workers = max(1, self._num_workers // 2)
-        num_transform_workers = max(1, self._num_workers - num_fetch_workers)
-        # num_fetch_workers = self._num_workers
-        # num_transform_workers = 4
 
         if loader.multiprocessing_context is None:
             multiprocessing_context = torch.multiprocessing
         else:
             multiprocessing_context = loader.multiprocessing_context
 
-        # Create the underlying two-phase iterator
-        self._iterator = TwoPhaseHybridDataLoaderIter(
-            dataset_kind=self._dataset_kind,
-            dataset=self._dataset,
-            auto_collation=self._auto_collation,
-            collate_fn=self._collate_fn,
-            drop_last=self._drop_last,
-            init_fn=loader.worker_init_fn,
-            num_fetch_workers=num_fetch_workers,
-            num_transform_workers=num_transform_workers,
-            pin_memory=self._pin_memory,
-            raw_data_queue_size=10,  # Default queue size
-            multiprocessing_context=multiprocessing_context,
+        # Multiprocessing queue for communication between main process and coordinator
+        self._worker_result_queue = multiprocessing_context.Queue()  # type: ignore[var-annotated]
+        self._shutdown = False
+        self._workers_done_event = multiprocessing_context.Event()
+
+        # Single index queue to send work to the coordinator process
+        self._index_queue = multiprocessing_context.Queue()  # type: ignore[var-annotated]
+        self._index_queue.cancel_join_thread()
+
+        # ===== START MINI-BATCH FEATURE =====
+        # Store mini_batch_size configuration
+        self._mini_batch_size = loader.mini_batch_size
+        self._batch_size = loader.batch_size
+        self._use_mini_batching = (
+            self._mini_batch_size is not None and self._mini_batch_size > 0
         )
+        # ===== END MINI-BATCH FEATURE =====
 
-        self._send_idx = 0
-        self._rcvd_idx = 0
-        self._task_info = {}
+        # Start the coordinator process
+        self._coordinator_process = multiprocessing_context.Process(
+            target=_utils.worker._process_with_threads_coordinator,
+            args=(
+                self._dataset_kind,
+                self._dataset,
+                self._index_queue,
+                self._worker_result_queue,
+                self._workers_done_event,
+                self._auto_collation,
+                self._collate_fn,
+                self._drop_last,
+                self._base_seed,
+                self._worker_init_fn,
+                self._num_workers,  # Number of threads within the coordinator
+                self._persistent_workers,
+                self._shared_seed,
+            ),
+        )
+        self._coordinator_process.daemon = True
+        self._coordinator_process.start()
 
-        # Start prefetching
-        prefetch_count = 2 * self._num_workers  # Similar to standard dataloader
-        for _ in range(prefetch_count):
-            self._try_put_index()
+        # Store in _workers list for compatibility with parent class shutdown logic
+        self._workers = [self._coordinator_process]
+        self._index_queues = [self._index_queue]
+
+        self._initialize_pin_memory()
+
+        # Set up signal handling for the coordinator process
+        _utils.signal_handling._set_worker_pids(
+            id(self),
+            (self._coordinator_process.pid,),  # type: ignore[misc]
+        )
+        _utils.signal_handling._set_SIGCHLD_handler()
+        self._worker_pids_set = True
+
+        self._reset(loader, first_iter=True)
 
     def _try_put_index(self):
-        """Try to put the next index into the queue."""
+        """Override to send work to single coordinator instead of multiple workers."""
+        max_tasks = self._prefetch_factor * self._num_workers
+        if self._tasks_outstanding >= max_tasks:
+            raise AssertionError(
+                "Number of outstanding tasks exceeded maximum allowed tasks"
+            )
+
         try:
             index = self._next_index()
         except StopIteration:
             return
 
-        self._iterator.put_indices(self._send_idx, index)
-        self._task_info[self._send_idx] = (
-            True,
-        )  # Single element tuple indicating task is outstanding
+        # ===== START MINI-BATCH FEATURE =====
+        if self._use_mini_batching:
+            # Split the batch into mini-batches
+            # Note: _send_mini_batched_indices will update _tasks_outstanding
+            self._send_mini_batched_indices(self._send_idx, index)
+        else:
+            # Original behavior: send full batch to coordinator
+            self._index_queue.put((self._send_idx, index))
+            self._task_info[self._send_idx] = (0,)  # Use worker_id=0 for coordinator
+            self._tasks_outstanding += 1
+        # ===== END MINI-BATCH FEATURE =====
         self._send_idx += 1
 
+    # ===== START MINI-BATCH FEATURE =====
+    def _send_mini_batched_indices(self, batch_idx, indices):
+        """Split a batch into mini-batches and send to workers.
+
+        Args:
+            batch_idx: The batch index
+            indices: List of sample indices for the full batch
+        """
+        if not isinstance(indices, list):
+            indices = list(indices)
+
+        batch_size = len(indices)
+        mini_batch_size = self._mini_batch_size
+
+        # Calculate number of mini-batches
+        num_mini_batches = (batch_size + mini_batch_size - 1) // mini_batch_size
+
+        # Create nested structure for tracking mini-batches
+        self._task_info[batch_idx] = {}
+
+        # Split indices into mini-batches and send them
+        for mini_batch_idx in range(num_mini_batches):
+            start_idx = mini_batch_idx * mini_batch_size
+            end_idx = min(start_idx + mini_batch_size, batch_size)
+            mini_batch_indices = indices[start_idx:end_idx]
+
+            # Send mini-batch to coordinator
+            # Use a tuple (batch_idx, mini_batch_idx, indices) to identify mini-batches
+            self._index_queue.put(((batch_idx, mini_batch_idx), mini_batch_indices))
+
+            # Track this mini-batch as dispatched (worker_id=0 for coordinator)
+            self._task_info[batch_idx][mini_batch_idx] = (0,)
+
+        # Increment _tasks_outstanding only once per batch, not per mini-batch
+        # This ensures we track batches, not mini-batches
+        self._tasks_outstanding += 1
+
+    # ===== END MINI-BATCH FEATURE =====
+
+    # ===== START MINI-BATCH FEATURE =====
     def _next_data(self):
-        """Get the next batch of data."""
+        """Override to handle mini-batch collection and concatenation."""
+        if not self._use_mini_batching:
+            # Use parent's implementation for non-mini-batch mode
+            return super()._next_data()
+
+        # Mini-batch mode: collect all mini-batches for a batch
         while True:
-            # Wait for the next result in order
-            while self._rcvd_idx not in self._task_info:
-                # No more tasks to receive
-                if not self._persistent_workers:
-                    self._iterator.shutdown()
-                raise StopIteration
+            # Check if we have a complete batch ready
+            if self._rcvd_idx in self._task_info:
+                mini_batch_info = self._task_info[self._rcvd_idx]
 
-            # Check if we already have the data cached (from out-of-order arrival)
-            if len(self._task_info[self._rcvd_idx]) == 2:
-                # Data is already available
-                _, batch = self._task_info.pop(self._rcvd_idx)
-                self._rcvd_idx += 1
-                self._try_put_index()
+                # Check if all mini-batches for this batch are collected
+                num_expected_mini_batches = len(mini_batch_info)
+                num_collected = sum(1 for v in mini_batch_info.values() if len(v) == 2)
 
-                # Handle exceptions
-                if isinstance(batch, ExceptionWrapper):
-                    batch.reraise()
+                if num_collected == num_expected_mini_batches:
+                    # All mini-batches collected, concatenate them
+                    mini_batches = []
+                    for mini_batch_idx in sorted(mini_batch_info.keys()):
+                        _, mini_batch_data = mini_batch_info[mini_batch_idx]
+                        if isinstance(mini_batch_data, ExceptionWrapper):
+                            mini_batch_data.reraise()
+                        mini_batches.append(mini_batch_data)
 
-                # Handle IterableDataset stop iteration
-                if isinstance(batch, _utils.worker._IterableDatasetStopIteration):
-                    if not self._persistent_workers:
-                        self._iterator.shutdown()
-                    raise StopIteration
-
-                return batch
-
-            # Get result from the iterator
-            success, data = self._iterator.get_result()
-            if success:
-                idx, batch = data
-                if idx == self._rcvd_idx:
-                    # Got the batch we're waiting for
-                    del self._task_info[idx]
+                    # Remove from task info and increment received index
+                    del self._task_info[self._rcvd_idx]
                     self._rcvd_idx += 1
+
+                    # Decrement _tasks_outstanding once for the entire batch
+                    # (we incremented it once when sending the batch)
+                    self._tasks_outstanding -= 1
+
+                    # Try to prefetch more work
                     self._try_put_index()
 
-                    # Handle exceptions
-                    if isinstance(batch, ExceptionWrapper):
-                        batch.reraise()
-
-                    # Handle IterableDataset stop iteration
-                    if isinstance(batch, _utils.worker._IterableDatasetStopIteration):
-                        if not self._persistent_workers:
-                            self._iterator.shutdown()
-                        raise StopIteration
-
+                    # Concatenate mini-batches into final batch
+                    batch = self._concatenate_mini_batches(mini_batches)
                     return batch
-                else:
-                    # Out of order result - store it for later
-                    if idx in self._task_info:
-                        self._task_info[idx] = (True, batch)
             else:
-                # Timeout - continue waiting
-                pass
+                # No task info for current receive idx, check if we're done
+                if self._rcvd_idx >= self._send_idx:
+                    if not self._persistent_workers:
+                        self._shutdown_workers()
+                    raise StopIteration
+
+            # Get next mini-batch result from queue
+            if self._shutdown or self._tasks_outstanding <= 0:
+                if self._rcvd_idx >= self._send_idx:
+                    if not self._persistent_workers:
+                        self._shutdown_workers()
+                    raise StopIteration
+
+            idx, data = self._get_data()
+            # NOTE: Do NOT decrement _tasks_outstanding here!
+            # We only decrement once per batch when all mini-batches are collected
+
+            # Handle IterableDataset stop iteration
+            if self._dataset_kind == _DatasetKind.Iterable:
+                if isinstance(data, _utils.worker._IterableDatasetStopIteration):
+                    if self._persistent_workers:
+                        self._workers_status[0] = False
+                    else:
+                        self._mark_worker_as_unavailable(0)
+                    self._try_put_index()
+                    continue
+
+            # idx is now (batch_idx, mini_batch_idx)
+            batch_idx, mini_batch_idx = idx
+
+            # Store the mini-batch data
+            if batch_idx in self._task_info:
+                self._task_info[batch_idx][mini_batch_idx] += (data,)
+
+    def _concatenate_mini_batches(self, mini_batches):
+        """Concatenate mini-batches into a single batch.
+
+        Args:
+            mini_batches: List of mini-batch data (already collated)
+
+        Returns:
+            Concatenated batch
+        """
+        if not mini_batches:
+            raise ValueError("No mini-batches to concatenate")
+
+        if len(mini_batches) == 1:
+            return mini_batches[0]
+
+        # Concatenate based on data type
+        first_batch = mini_batches[0]
+
+        # Handle tensors
+        if isinstance(first_batch, torch.Tensor):
+            return torch.cat(mini_batches, dim=0)
+
+        # Handle lists/tuples - concatenate element-wise
+        elif isinstance(first_batch, (list, tuple)):
+            result = []
+            for i in range(len(first_batch)):
+                # Recursively concatenate each element
+                elements = [batch[i] for batch in mini_batches]
+                if isinstance(elements[0], torch.Tensor):
+                    result.append(torch.cat(elements, dim=0))
+                elif isinstance(elements[0], (list, tuple)):
+                    # Flatten lists/tuples
+                    flattened = []
+                    for elem in elements:
+                        flattened.extend(elem)
+                    result.append(type(elements[0])(flattened))
+                else:
+                    # For other types, just flatten
+                    flattened = []
+                    for elem in elements:
+                        if isinstance(elem, (list, tuple)):
+                            flattened.extend(elem)
+                        else:
+                            flattened.append(elem)
+                    result.append(flattened)
+
+            return type(first_batch)(result)
+
+        # Handle dicts - concatenate values element-wise
+        elif isinstance(first_batch, dict):
+            result = {}
+            for key in first_batch.keys():
+                values = [batch[key] for batch in mini_batches]
+                if isinstance(values[0], torch.Tensor):
+                    result[key] = torch.cat(values, dim=0)
+                elif isinstance(values[0], (list, tuple)):
+                    # Flatten lists/tuples
+                    flattened = []
+                    for val in values:
+                        flattened.extend(val)
+                    result[key] = type(values[0])(flattened)
+                else:
+                    # For other types, just flatten
+                    flattened = []
+                    for val in values:
+                        if isinstance(val, (list, tuple)):
+                            flattened.extend(val)
+                        else:
+                            flattened.append(val)
+                    result[key] = flattened
+            return result
+
+        # For other types, try to concatenate as a list
+        else:
+            return mini_batches
+
+    # ===== END MINI-BATCH FEATURE =====
+
+    def _process_data(self, data, worker_idx):
+        """Process received data. Worker idx is always 0 for the coordinator."""
+        self._try_put_index()
+        if isinstance(data, ExceptionWrapper):
+            data.reraise()
+        return data
+
+    def _mark_worker_as_unavailable(self, worker_id, shutdown=False):
+        """Override to handle single coordinator process."""
+        if worker_id != 0:
+            raise AssertionError(
+                f"Invalid worker_id {worker_id} for process_with_threads mode"
+            )
+
+        # Signal termination to coordinator
+        self._index_queue.put(None)
+        self._workers_status[0] = False
+
+        if self._workers_done_event.is_set() != shutdown:
+            raise AssertionError(
+                "_workers_done_event state does not match shutdown flag"
+            )
+
+    def _shutdown_workers(self):
+        """Shutdown the coordinator process and its internal threads."""
+        if (
+            _utils is None
+            or _utils.python_exit_status is True
+            or _utils.python_exit_status is None
+        ):
+            return
+
+        if not self._shutdown:
+            self._shutdown = True
+
+            # Exit pin_memory_thread first if it exists
+            if hasattr(self, "_pin_memory_thread"):
+                self._pin_memory_thread_done_event.set()
+                self._worker_result_queue.put((None, None))
+                self._pin_memory_thread.join()
+
+            # Exit coordinator process
+            self._workers_done_event.set()
+            if self._workers_status[0]:  # If coordinator is still active
+                self._index_queue.put(None)
+
+            # Wait for coordinator to finish
+            self._coordinator_process.join(timeout=_utils.STATUS_CHECK_INTERVAL)
+
+        try:
+            if hasattr(self, "_pin_memory_thread"):
+                self._worker_result_queue.cancel_join_thread()
+                self._worker_result_queue.close()
+
+            self._index_queue.cancel_join_thread()
+            self._index_queue.close()
+        finally:
+            if self._worker_pids_set:
+                _utils.signal_handling._remove_worker_pids(id(self))
+                self._worker_pids_set = False
+            if self._coordinator_process.is_alive():
+                self._coordinator_process.terminate()
 
     def _reset(self, loader, first_iter=False):
-        """Reset the iterator for a new epoch."""
+        """Reset for new epoch."""
         super()._reset(loader, first_iter)
-        self._send_idx = 0
-        self._rcvd_idx = 0
-        self._task_info = {}
-
-        # Restart prefetching
-        prefetch_count = 2 * self._num_workers
-        for _ in range(prefetch_count):
-            self._try_put_index()
-
-    def __del__(self):
-        """Cleanup when the iterator is deleted."""
-        if hasattr(self, "_iterator"):
-            self._iterator.shutdown()
+        # Override parent's worker_status to have single entry for coordinator
+        self._workers_status = [True]
+        self._workers_num_tasks = [0]

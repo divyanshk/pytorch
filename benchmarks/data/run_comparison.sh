@@ -18,6 +18,7 @@ DATA_PATH="${DATA_PATH:-train/}"
 HF_DATASET_NAME="${HF_DATASET_NAME:-}"
 NUM_WORKERS_LIST="${NUM_WORKERS_LIST:-4 8 16}"
 MAX_BATCHES="${MAX_BATCHES:-100}"
+DATASET_COPIES="${DATASET_COPIES:-1}"
 BATCH_SIZES="${BATCH_SIZES:-8 64 128 256 512 1024 2048}"
 WORKER_METHODS="${WORKER_METHODS:-multiprocessing thread}"
 
@@ -78,17 +79,19 @@ for worker_method in ${WORKER_METHODS}; do
 
             LOG_FILE="${RESULTS_DIR}/${worker_method}_workers${num_workers}_batch${batch_size}.log"
 
+            factor=$(( ((batch_size * MAX_BATCHES) / 150000) + 1))
             # Build command based on dataset type
             CMD="python ${BENCHMARK_SCRIPT} \
                 --dataset_type ${DATASET_TYPE} \
                 --batch_size ${batch_size} \
                 --num_workers ${num_workers} \
                 --max_batches ${MAX_BATCHES} \
-                --worker_method ${worker_method}"
+                --worker_method ${worker_method} \
+                --dataset_copies $((DATASET_COPIES * factor))"
 
             if [ "${DATASET_TYPE}" = "local" ]; then
                 CMD="${CMD} --data_path ${DATA_PATH}"
-            else
+            elif [ "${DATASET_TYPE}" = "huggingface" ]; then
                 CMD="${CMD} --hf_dataset_name ${HF_DATASET_NAME}"
             fi
 
@@ -99,7 +102,7 @@ for worker_method in ${WORKER_METHODS}; do
             echo "" >> "${SUMMARY_FILE}"
             echo "worker_method=${worker_method}, num_workers=${num_workers}, batch_size=${batch_size}" >> "${SUMMARY_FILE}"
             echo "----------------------------------------" >> "${SUMMARY_FILE}"
-            grep -E "(Memory increase:|Samples per second:|Average data loading time:)" "${LOG_FILE}" >> "${SUMMARY_FILE}" || true
+            grep -E "(Memory increase:|Samples per second \(overall throughput\):|Average data loading time:)" "${LOG_FILE}" >> "${SUMMARY_FILE}" || true
             echo "" >> "${SUMMARY_FILE}"
 
             echo "Results saved to: ${LOG_FILE}"
@@ -126,4 +129,4 @@ echo "Compare memory usage:"
 echo "  grep 'Memory increase' ${RESULTS_DIR}/*.log"
 echo ""
 echo "Compare speed:"
-echo "  grep 'Samples per second' ${RESULTS_DIR}/*.log"
+echo "  grep 'Samples per second (overall throughput)' ${RESULTS_DIR}/*.log"

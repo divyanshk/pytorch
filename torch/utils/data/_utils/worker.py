@@ -5,7 +5,6 @@ These **needs** to be in global scope since Py2 doesn't support serializing
 static methods.
 """
 
-import copy
 import os
 import queue
 import random
@@ -17,6 +16,7 @@ import torch
 from torch._utils import ExceptionWrapper
 
 from . import HAS_NUMPY, IS_WINDOWS, STATUS_CHECK_INTERVAL, signal_handling
+from . import pin_memory as pin_memory_module
 
 
 if TYPE_CHECKING:
@@ -262,12 +262,15 @@ def _base_worker_loop(
     num_workers,
     persistent_workers,
     shared_rng=None,
-    is_process=True,
+    worker_method="multiprocessing",
     watchdog_constructor=None,
-    pin_memory_in_thread_workers=False,
+    pin_memory=False,
 ) -> None:
     """
     Base worker loop with common functionality for both process and thread workers.
+
+    Args:
+        worker_method: The worker method ("multiprocessing", "thread", or "process_with_threads")
     """
     try:
         torch.set_num_threads(1)
@@ -276,7 +279,9 @@ def _base_worker_loop(
 
         init_exception = None
 
-        error_prefix = "worker process" if is_process else "worker thread"
+        error_prefix = (
+            "worker process" if worker_method == "multiprocessing" else "worker thread"
+        )
         try:
             if init_fn is not None:
                 init_fn(worker_id)
@@ -312,7 +317,7 @@ def _base_worker_loop(
                 iteration_end = False
 
                 # Note: DataPipe is not supported in thread mode
-                if is_process:
+                if worker_method == "multiprocessing":
                     from torch.utils.data import IterDataPipe
                     from torch.utils.data.graph_settings import apply_random_seed
 
@@ -351,12 +356,12 @@ def _base_worker_loop(
                     data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
 
                     # Pin memory after fetching if enabled (for thread workers only)
-                    if pin_memory_in_thread_workers and not isinstance(
-                        data, ExceptionWrapper
+                    if (
+                        pin_memory
+                        and worker_method == "thread"
+                        and not isinstance(data, ExceptionWrapper)
                     ):
                         try:
-                            from . import pin_memory as pin_memory_module
-
                             data = pin_memory_module.pin_memory(data)
                         except Exception:
                             data = ExceptionWrapper(
@@ -460,7 +465,7 @@ def _process_worker_loop(
         num_workers=num_workers,
         persistent_workers=persistent_workers,
         shared_rng=shared_rng,
-        is_process=True,
+        worker_method="multiprocessing",
         watchdog_constructor=ManagerWatchdog,
     )
 
@@ -484,6 +489,7 @@ def _thread_worker_loop(
     num_workers,
     persistent_workers,
     pin_memory=False,
+    worker_method="thread",
 ):
     """
     Thread worker loop that uses the common base worker loop for threads.
@@ -492,6 +498,7 @@ def _thread_worker_loop(
 
     Args:
         pin_memory: If True, pin memory after fetching data
+        worker_method: The worker method ("thread" or "process_with_threads")
     """
 
     # Set the thread name for better debugging
@@ -524,7 +531,7 @@ def _thread_worker_loop(
         seed=seed,
         dataset=dataset,
         rng=rng,  # not set for process workers
-        worker_method="thread",
+        worker_method=worker_method,
     )
 
     _thread_local_worker_info.worker_info = worker_info
@@ -544,7 +551,208 @@ def _thread_worker_loop(
         worker_id=worker_id,
         num_workers=num_workers,
         persistent_workers=persistent_workers,
-        is_process=False,
+        shared_rng=None,  # Not used for thread workers
+        worker_method=worker_method,
         watchdog_constructor=None,  # No watchdog needed for threads
-        pin_memory_in_thread_workers=pin_memory,
+        pin_memory=pin_memory,
     )
+
+
+def _forward_indices_to_threads(mp_index_queue, thread_index_queues, done_event):
+    """
+    Forward indices from multiprocessing queue to thread-local queues.
+
+    This eliminates lock contention by having only the coordinator touch the mp.Queue.
+    Uses round-robin distribution for load balancing.
+
+    Args:
+        mp_index_queue: Multiprocessing queue to receive indices from main process
+        thread_index_queues: List of thread-local queues, one per worker thread
+        done_event: Multiprocessing event to signal shutdown
+    """
+    thread_idx = 0
+    num_threads = len(thread_index_queues)
+
+    try:
+        while not done_event.is_set():
+            try:
+                item = mp_index_queue.get(timeout=STATUS_CHECK_INTERVAL)
+
+                if item is None:
+                    # Shutdown signal received
+                    break
+
+                # Distribute round-robin to thread queues
+                thread_index_queues[thread_idx].put(item)
+                thread_idx = (thread_idx + 1) % num_threads
+
+            except queue.Empty:
+                continue
+    except Exception:
+        pass
+    finally:
+        # Send shutdown signal to all threads
+        for q in thread_index_queues:
+            q.put(None)
+
+
+def _forward_results_from_threads(thread_result_queue, mp_result_queue, done_event):
+    """
+    Forward results from thread-local queue to multiprocessing queue.
+
+    This eliminates lock contention by having only the coordinator touch the mp.Queue.
+    All threads write to a shared thread.Queue (fast), coordinator reads and forwards.
+
+    Args:
+        thread_result_queue: Shared thread-local queue for all worker threads to write to
+        mp_result_queue: Multiprocessing queue to send results back to main process
+        done_event: Multiprocessing event to signal shutdown
+    """
+    try:
+        while not done_event.is_set():
+            try:
+                result = thread_result_queue.get(timeout=STATUS_CHECK_INTERVAL)
+
+                if result is None:
+                    # Shutdown signal
+                    break
+
+                mp_result_queue.put(result)
+
+            except queue.Empty:
+                continue
+    except Exception:
+        pass
+
+
+def _process_with_threads_coordinator(
+    dataset_kind,
+    dataset,
+    index_queue,
+    result_queue,
+    done_event,
+    auto_collation,
+    collate_fn,
+    drop_last,
+    base_seed,
+    init_fn,
+    num_threads,
+    persistent_workers,
+    shared_seed,
+):
+    """
+    Coordinator function that runs in a separate process and manages internal threads.
+
+    Optimized Architecture (Phase 2):
+    - Main process sends indices via index_queue (mp.Queue)
+    - Coordinator forwards from mp.Queue → thread-local queues (eliminates contention!)
+    - Each worker thread has dedicated queue.Queue (no locking between threads)
+    - Threads write results to shared thread.Queue (fast)
+    - Coordinator forwards from thread.Queue → mp.Queue (only coordinator touches mp.Queue)
+    - Main process reads from result_queue
+
+    Key Optimization: Only coordinator touches mp.Queues, threads use lock-free queue.Queue.
+
+    Args:
+        dataset_kind: Type of dataset (Map or Iterable)
+        dataset: The dataset object
+        index_queue: Multiprocessing queue to receive indices from main process
+        result_queue: Multiprocessing queue to send results back to main process
+        done_event: Multiprocessing event to signal shutdown
+        auto_collation: Whether to use automatic collation
+        collate_fn: Collation function
+        drop_last: Whether to drop last incomplete batch
+        base_seed: Base random seed
+        init_fn: Worker initialization function
+        num_threads: Number of internal threads to create
+        persistent_workers: Whether workers persist across epochs
+        shared_seed: Shared seed for IterDataPipe
+    """
+    try:
+        # Set up signal handlers for the coordinator process
+        signal_handling._set_worker_signal_handlers()
+        torch.multiprocessing._set_thread_name("pt_data_coordinator")
+        torch.set_num_threads(1)
+
+        # Create internal thread-safe queues to eliminate mp.Queue contention
+        # Each worker thread gets a dedicated index queue (no lock contention!)
+        thread_index_queues = [queue.Queue(maxsize=32) for _ in range(num_threads)]
+
+        thread_result_queue = queue.Queue(maxsize=num_threads * 32)
+
+        # Create threading event for intra-process signaling
+        thread_done_event = threading.Event()
+
+        # Start internal worker threads with dedicated queues
+        threads = []
+        for i in range(num_threads):
+            t = threading.Thread(
+                target=_thread_worker_loop,
+                args=(
+                    dataset_kind,
+                    dataset,
+                    thread_index_queues[i],  # Each thread has its own queue!
+                    thread_result_queue,
+                    thread_done_event,
+                    auto_collation,
+                    collate_fn,
+                    drop_last,
+                    base_seed,
+                    init_fn,
+                    i,
+                    num_threads,
+                    persistent_workers,
+                    False,  # pin_memory=False, handled in main process like multiprocessing
+                    "process_with_threads",
+                ),
+                daemon=True,
+            )
+            t.start()
+            threads.append(t)
+
+        # Start forwarding threads
+        # These threads act as a bridge between mp.Queues and thread.Queues
+        forward_indices_thread = threading.Thread(
+            target=_forward_indices_to_threads,
+            args=(index_queue, thread_index_queues, done_event),
+            daemon=True,
+        )
+        forward_indices_thread.start()
+
+        forward_results_thread = threading.Thread(
+            target=_forward_results_from_threads,
+            args=(thread_result_queue, result_queue, done_event),
+            daemon=True,
+        )
+        forward_results_thread.start()
+
+        # Create watchdog to check if main process is alive
+        watchdog = ManagerWatchdog()
+
+        # Coordinator loop: efficiently wait for shutdown signal
+        while watchdog.is_alive():
+            # Wait for done_event with periodic timeout to check watchdog
+            # Returns True if event was set, False if timeout occurred
+            if done_event.wait(timeout=STATUS_CHECK_INTERVAL):
+                # Event was set - shutdown requested
+                break
+
+        # Signal threads to shutdown
+        thread_done_event.set()
+
+        thread_result_queue.put(None)
+
+        forward_indices_thread.join(timeout=5.0)
+        forward_results_thread.join(timeout=5.0)
+
+        # Wait for worker threads to finish
+        for t in threads:
+            t.join(timeout=5.0)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Clean up
+        if done_event.is_set():
+            result_queue.cancel_join_thread()
+            result_queue.close()

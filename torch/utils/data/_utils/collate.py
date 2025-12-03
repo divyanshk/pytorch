@@ -266,7 +266,10 @@ def collate_tensor_fn(
             "please provide a custom collate_fn to handle them appropriately."
         )
     worker_info = torch.utils.data.get_worker_info()
-    if worker_info is not None and worker_info.worker_method == "multiprocessing":
+    if worker_info is not None and worker_info.worker_method in (
+        "multiprocessing",
+        "process_with_threads",
+    ):
         # If we're in a background process, concatenate directly into a
         # shared memory tensor to avoid an extra copy
         numel = sum(x.numel() for x in batch)
