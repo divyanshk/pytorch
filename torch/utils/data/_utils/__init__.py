@@ -12,6 +12,8 @@ import sys
 # old private location of the ExceptionWrapper that some users rely on:
 from torch._utils import ExceptionWrapper
 
+from ._types import _BaseQueue, _MPQueue
+
 
 IS_WINDOWS = sys.platform == "win32"
 

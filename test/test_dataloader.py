@@ -2877,7 +2877,13 @@ except RuntimeError as e:
         #        `get_worker_info() != None`), even though it is not.
         old = _utils.worker._worker_info
         try:
-            _utils.worker._worker_info = "x"
+            _utils.worker._worker_info = _utils.worker.WorkerInfo(
+                id=0,
+                num_workers=1,
+                seed=0,
+                dataset=self.dataset,
+                worker_method="multiprocessing",
+            )
             self.assertEqual(dataloader.default_collate([t_in]).is_shared(), True)
             self.assertEqual(dataloader.default_collate([n_in]).is_shared(), True)
         finally:
@@ -3453,7 +3459,7 @@ class TestIndividualWorkerQueue(TestCase):
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            timeout=10,
+            timeout=JOIN_TIMEOUT,
             worker_init_fn=self.dataset.worker_init_fn,
         )
         current_worker_idx = 0
@@ -3483,15 +3489,18 @@ class SetAffinityDataset(IterableDataset):
         self.expected_affinity = expected_affinity
 
     def __iter__(self):
-        after = os.sched_getaffinity(0)
-        return iter(after)
+        affinity_mask = os.sched_getaffinity(0)
+        return iter(affinity_mask)
 
 
 def _worker_set_affinity_init(worker_id):
     worker_info = torch.utils.data.get_worker_info()
     if worker_info is not None:
         dataset = worker_info.dataset
-        if isinstance(dataset, SetAffinityDataset) and dataset.expected_affinity is not None:
+        if (
+            isinstance(dataset, SetAffinityDataset)
+            and dataset.expected_affinity is not None
+        ):
             os.sched_setaffinity(0, [dataset.expected_affinity])
 
 
@@ -3500,21 +3509,23 @@ def _worker_set_affinity_init(worker_id):
 )
 class TestSetAffinity(TestCase):
     def test_set_affinity_in_worker_init(self):
+        # Query the current affinity mask to avoid setting a disallowed one
         old_affinity = os.sched_getaffinity(0)
         if not old_affinity:
             self.skipTest("No affinity information")
-
+        # Choose any
         expected_affinity = list(old_affinity)[-1]
 
         # Pass expected affinity through the dataset
         dataset = SetAffinityDataset(expected_affinity=expected_affinity)
         dataloader = torch.utils.data.DataLoader(
-            dataset, num_workers=2, worker_init_fn=_worker_set_affinity_init,
+            dataset,
+            num_workers=2,
+            worker_init_fn=_worker_set_affinity_init,
         )
 
         for sample in dataloader:
-            sample_list = sample.tolist() if hasattr(sample, 'tolist') else list(sample)
-            self.assertEqual(sample_list, [expected_affinity])
+            self.assertEqual(sample, [expected_affinity])
 
 
 class ConvDataset(Dataset):
@@ -3597,6 +3608,9 @@ class TestOutOfOrderDataLoader(TestCase):
         outputs = list(dataloader)
         worker_ids = [o[0] for o in outputs]
         data = [o[1] for o in outputs]
+
+        # Both threading and multiprocessing use per-worker queues,
+        # so worker assignment and data order are deterministic
         self.assertEqual(expected_worker_ids, worker_ids)
         self.assertEqual(expected_data, data)
 
@@ -3612,16 +3626,17 @@ class TestOutOfOrderDataLoader(TestCase):
             worker_method=worker_method,
         )
 
-        # worker_id = 0 gets 'stuck' on 0 and also has 2 in it's queue
+        # worker_id = 0 gets 'stuck' on 0 and also has 2 in its queue
         # due to prefetch_factor being 2
-        # this makes the test more deterministic as [0, 2] will be the last elements
         expected_worker_ids = [1, 1, 1, 1, 1, 1, 1, 1, 0, 0]
         expected_data = [1, 3, 4, 5, 6, 7, 8, 9, 0, 2]
         outputs = list(dataloader)
         worker_ids = [o[0].item() for o in outputs]
         data = [o[1].item() for o in outputs]
+
+        # Both threading and multiprocessing use per-worker queues,
+        # so behavior is deterministic
         self.assertEqual(expected_worker_ids, worker_ids)
-        self.assertNotEqual(data, list(range(10)))
         self.assertEqual(expected_data, data)
 
     @parametrize("worker_method", ["multiprocessing", "thread"])
@@ -3640,6 +3655,9 @@ class TestOutOfOrderDataLoader(TestCase):
         outputs = list(dataloader)
         worker_ids = [o[0] for o in outputs]
         data = [o[1] for o in outputs]
+
+        # Both threading and multiprocessing use per-worker queues,
+        # so worker assignment and data order are deterministic
         self.assertEqual(expected_worker_ids, worker_ids)
         self.assertEqual(expected_data, data)
 
@@ -3661,9 +3679,10 @@ class TestOutOfOrderDataLoader(TestCase):
         outputs = list(dataloader)
         worker_ids = [o[0] for o in outputs]
         data = [o[1] for o in outputs]
+
+        # Both threading and multiprocessing use per-worker queues,
+        # so behavior is deterministic
         self.assertEqual(expected_worker_ids, worker_ids)
-        self.assertEqual(sum(worker_ids), 5)
-        self.assertNotEqual(data, [0, 5, 1, 6, 2, 7, 3, 8, 4, 9])
         self.assertEqual(expected_data, data)
 
 
@@ -3728,9 +3747,6 @@ class TestThreadingDataLoader(TestCase):
             def __getitem__(self, idx):
                 worker_info = torch.utils.data.get_worker_info()
 
-                # Use thread-local generator - thread-safe!
-                # Not adding a fallback here because this should exist,
-                # otherwise something is wrong with the threading setup
                 generator = worker_info.rng.torch_generator
 
                 # Apply random transform using thread-specific generator
@@ -3912,9 +3928,7 @@ class TestThreadingDataLoader(TestCase):
         )
 
         # Check that all data is correctly loaded
-        all_data = []
-        for batch in loader:
-            all_data.append(batch)
+        all_data = list(loader)
 
         all_data = torch.cat(all_data, 0)
         self.assertEqual(len(all_data), 60)  # len(dataset) * num_workers
@@ -4033,9 +4047,7 @@ class TestThreadingDataLoader(TestCase):
                 {
                     "worker_id": info.id,
                     "seed": info.seed,
-                    "thread_rng_id": id(info.rng)
-                    if hasattr(info, "rng")
-                    else None,
+                    "thread_rng_id": id(info.rng) if hasattr(info, "rng") else None,
                     "thread_id": threading.get_ident(),
                 }
             )
@@ -4088,9 +4100,7 @@ class TestThreadingDataLoader(TestCase):
             self.assertTrue(hasattr(worker_info.rng, "numpy_generator"))
 
             self.assertIsInstance(worker_info.rng.random_generator, random.Random)
-            self.assertIsInstance(
-                worker_info.rng.torch_generator, torch.Generator
-            )
+            self.assertIsInstance(worker_info.rng.torch_generator, torch.Generator)
 
             # Store worker info data for verification
             worker_info_data.append(
