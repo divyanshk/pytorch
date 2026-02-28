@@ -2154,6 +2154,11 @@ def aot_stage2_autograd(
     and returns a wrapped torch.autograd.Function with a forward and backward.
     """
 
+    # Custom instrumentation for learning
+    print("\n[TRACE] AOTAutograd: Generating forward/backward graphs (torch/_functorch/_aot_autograd/graph_compile.py:2148)")
+    print(f"  Joint graph nodes: {len(aot_graph_capture.graph_module.graph.nodes)}")
+    print(f"  → Will partition into separate forward and backward graphs")
+
     fx_g = aot_graph_capture.graph_module
     maybe_subclass_meta = aot_graph_capture.maybe_subclass_meta
     fw_metadata = aot_state.fw_metadata

@@ -1462,6 +1462,12 @@ def _compile(
     # in the case of normal and exception code paths
     convert_frame_box: Optional[ConvertFrameBox] = None,
 ) -> ConvertFrameReturn:
+    # Custom instrumentation for learning
+    print("\n[TRACE] Dynamo: Starting graph capture (torch/_dynamo/convert_frame.py:1442)")
+    print(f"  Function: {code.co_name}")
+    print(f"  Filename: {code.co_filename}:{code.co_firstlineno}")
+    print(f"  Compile ID: {compile_id}")
+
     from torch.fx.experimental.validator import (
         BisectValidationException,
         ValidationException,

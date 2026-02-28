@@ -6,6 +6,7 @@
 #include <c10/mobile/CPUCachingAllocator.h>
 #include <c10/mobile/CPUProfilingAllocator.h>
 #include <c10/util/Logging.h>
+#include <iostream>
 
 // TODO: rename flag to C10
 C10_DEFINE_bool(
@@ -18,6 +19,10 @@ namespace c10 {
 struct C10_API DefaultCPUAllocator final : at::Allocator {
   DefaultCPUAllocator() = default;
   at::DataPtr allocate(size_t nbytes) override {
+    // Custom instrumentation for learning
+    std::cout << "\n[TRACE] CPU Memory Allocation (c10/core/CPUAllocator.cpp:20)" << std::endl;
+    std::cout << "  Allocating: " << nbytes << " bytes (" << (nbytes / 1024.0 / 1024.0) << " MB)" << std::endl;
+
     void* data = nullptr;
     try {
       data = c10::alloc_cpu(nbytes);
@@ -25,6 +30,9 @@ struct C10_API DefaultCPUAllocator final : at::Allocator {
       profiledCPUMemoryReporter().OutOfMemory(nbytes);
       throw e;
     }
+
+    std::cout << "  → Allocated at address: " << data << std::endl;
+
     profiledCPUMemoryReporter().New(data, nbytes);
     return {data, data, &ReportAndDelete, at::Device(at::DeviceType::CPU)};
   }
@@ -33,6 +41,11 @@ struct C10_API DefaultCPUAllocator final : at::Allocator {
     if (!ptr) {
       return;
     }
+
+    // Custom instrumentation for learning
+    std::cout << "\n[TRACE] CPU Memory Deallocation (c10/core/CPUAllocator.cpp:40)" << std::endl;
+    std::cout << "  Freeing memory at address: " << ptr << std::endl;
+
     profiledCPUMemoryReporter().Delete(ptr);
     free_cpu(ptr);
   }

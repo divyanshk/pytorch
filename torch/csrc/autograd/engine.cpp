@@ -1065,6 +1065,9 @@ void Engine::evaluate_function(
     Node* func,
     InputBuffer& inputs,
     const std::shared_ptr<ReadyQueue>& cpu_ready_queue) {
+  std::cout << "[TRACE] Autograd: Executing backward function" << std::endl;
+  std::cout << "  Function: " << func->name() << std::endl;
+
   // Locally set the current stream to func's associated stream
   auto opt_parent_stream = (*func).stream();
   c10::OptionalStreamGuard parent_stream_guard{opt_parent_stream};
@@ -1408,6 +1411,9 @@ c10::intrusive_ptr<at::ivalue::Future> Engine::execute_with_graph_task(
     const std::shared_ptr<GraphTask>& graph_task,
     std::shared_ptr<Node> graph_root,
     InputBuffer&& input_buffer) {
+  std::cout << "\n[TRACE] Autograd Engine: Starting backward pass" << std::endl;
+  std::cout << "  Root node: " << graph_root->name() << std::endl;
+
   initialize_device_threads_pool();
   // Lock mutex for GraphTask.
   std::unique_lock<std::mutex> lock(graph_task->mutex_);

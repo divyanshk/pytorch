@@ -2499,6 +2499,12 @@ def compile_fx(
     NB: This function TAKES OWNERSHIP of the input ``model_`` and can potentially
     mutate it!  Make a copy if you need to preserve the original GraphModule.
     """
+    # Custom instrumentation for learning
+    print("\n[TRACE] Inductor: Starting code generation (torch/_inductor/compile_fx.py:2483)")
+    print(f"  FX graph nodes: {len(model_.graph.nodes)}")
+    print(f"  Example inputs: {len(example_inputs_)}")
+    print(f"  → Will optimize and generate C++/Triton code")
+
     # Some arguments trigger a recursive call to compile_fx.  Handle these
     # short circuits first, before anything else
 

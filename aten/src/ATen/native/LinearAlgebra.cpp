@@ -2015,6 +2015,12 @@ static Tensor _matmul_impl(
   const auto dim_tensor1 = tensor1.dim();
   const auto dim_tensor2 = tensor2.dim();
 
+  std::cout << "\n[TRACE] C++ _matmul_impl (aten/src/ATen/native/LinearAlgebra.cpp:2010)" << std::endl;
+  std::cout << "  tensor1: shape=" << tensor1.sizes() << ", dtype=" << tensor1.scalar_type()
+            << ", device=" << tensor1.device() << std::endl;
+  std::cout << "  tensor2: shape=" << tensor2.sizes() << ", dtype=" << tensor2.scalar_type()
+            << ", device=" << tensor2.device() << std::endl;
+
   // This is checked up here to simplify the logic below
   // Note that the strings are just evaluated on failure, so almost always we just evaluate
   // the condition and move on
@@ -2035,13 +2041,17 @@ static Tensor _matmul_impl(
   }
 
   if (dim_tensor1 == 1 && dim_tensor2 == 1) {
+    std::cout << "  → C++ path: at::dot (1D @ 1D)" << std::endl;
     return has_out ? at::dot_out(out, tensor1, tensor2) : tensor1.dot(tensor2);
   } else if (dim_tensor1 == 2 && dim_tensor2 == 1) {
+    std::cout << "  → C++ path: at::mv (2D @ 1D)" << std::endl;
     return has_out ? at::mv_out(out, tensor1, tensor2) : tensor1.mv(tensor2);
   } else if (dim_tensor1 == 1 && dim_tensor2 == 2) {
+    std::cout << "  → C++ path: at::mm (1D @ 2D via unsqueeze)" << std::endl;
     return has_out ? at::mm_out(out, tensor1.unsqueeze(0), tensor2).squeeze_(0)
                    : tensor1.unsqueeze(0).mm(tensor2).squeeze_(0);
   } else if (dim_tensor1 == 2 && dim_tensor2 == 2) {
+    std::cout << "  → C++ path: at::mm (2D @ 2D)" << std::endl;
     return has_out ? at::mm_out(out, tensor1, tensor2) : tensor1.mm(tensor2);
   } else if (should_fold(tensor1, tensor2, has_out)) {
     // dim_tensor1 >=3 && (dim_tensor2 == 1 || dim_tensor2 == 2) ||
@@ -2049,6 +2059,8 @@ static Tensor _matmul_impl(
     // and at least one of the following two conditions hold
     // - the small tensor requires grad (see should_fold for the why)
     // - we can fold the larger tensor t1 into a matrix as t1.view(-1, t1.size(-1)) without copying
+
+    std::cout << "  → C++ path: at::mm with folding (batched optimized)" << std::endl;
 
     // optimization: use mm instead of bmm by folding the batch of the larger tensor
     // into its leading matrix dimension
@@ -2165,6 +2177,8 @@ static Tensor _matmul_impl(
     if (dim_tensor2 > 1) {
       output_shape.push_back(p);
     }
+
+    std::cout << "  → C++ path: at::bmm (batch matrix multiply)" << std::endl;
 
     if (!has_out) {
       if (vector_rhs) {

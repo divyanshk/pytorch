@@ -786,7 +786,16 @@ C10_ALWAYS_INLINE_UNLESS_MOBILE Return Dispatcher::call(
         "[call]", toString(op.operator_name()), dispatchKeySet);
   }
 #endif
+
+  // Custom instrumentation for learning
+  std::cout << "\n[TRACE] ATen Dispatcher (aten/src/ATen/core/dispatch/Dispatcher.h:776)" << std::endl;
+  std::cout << "  Operator: " << toString(op.operator_name()) << std::endl;
+  std::cout << "  Dispatch KeySet: " << dispatchKeySet << std::endl;
+  std::cout << "  Highest priority key: " << toString(dispatchKeySet.highestPriorityTypeId()) << std::endl;
+
   const KernelFunction& kernel = op.operatorDef_->op.lookup(dispatchKeySet);
+
+  std::cout << "  → Selected kernel for key: " << toString(dispatchKeySet.highestPriorityTypeId()) << std::endl;
 #ifndef PYTORCH_DISABLE_PER_OP_PROFILING
   auto step_callbacks =
       at::getStepCallbacksUnlessEmpty(at::RecordScope::FUNCTION);

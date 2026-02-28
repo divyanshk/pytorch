@@ -725,6 +725,17 @@ Tensor scaled_dot_product_attention(
     std::optional<double> scale,
     bool enable_gqa) {
   using sdp::SDPBackend;
+
+  std::cout << "\n[TRACE] C++ scaled_dot_product_attention (aten/src/ATen/native/transformers/attention.cpp:718)" << std::endl;
+  std::cout << "  query: shape=" << query_.sizes() << ", dtype=" << query_.scalar_type()
+            << ", device=" << query_.device() << std::endl;
+  std::cout << "  key: shape=" << key.sizes() << ", dtype=" << key.scalar_type()
+            << ", device=" << key.device() << std::endl;
+  std::cout << "  value: shape=" << value.sizes() << ", dtype=" << value.scalar_type()
+            << ", device=" << value.device() << std::endl;
+  std::cout << "  dropout_p=" << dropout_p << ", is_causal=" << is_causal
+            << ", enable_gqa=" << enable_gqa << std::endl;
+
   validate_sdpa_input(query_, key, value, attn_mask_, dropout_p, is_causal, scale);
   int64_t choice_int = static_cast<int64_t>(sdp::SDPBackend::math);
   if (_fused_sdp_choice_stub.is_device_supported(query_.device().type())) {
@@ -733,6 +744,30 @@ Tensor scaled_dot_product_attention(
   }
   const auto query_device_type = query_.device().type();
   const auto backend = static_cast<SDPBackend>(choice_int);
+
+  // Log which backend is selected
+  std::cout << "  → Backend selected: ";
+  switch (backend) {
+    case SDPBackend::cudnn_attention:
+      std::cout << "cuDNN attention (optimized GPU kernel)" << std::endl;
+      break;
+    case SDPBackend::flash_attention:
+      std::cout << "Flash Attention (memory-efficient)" << std::endl;
+      break;
+    case SDPBackend::efficient_attention:
+      std::cout << "Efficient Attention (xFormers)" << std::endl;
+      break;
+    case SDPBackend::overrideable:
+      std::cout << "Overrideable (custom backend)" << std::endl;
+      break;
+    case SDPBackend::math:
+      std::cout << "Math (fallback PyTorch implementation)" << std::endl;
+      break;
+    default:
+      std::cout << "Unknown backend" << std::endl;
+      break;
+  }
+
   const auto convert_attn_func = backend != SDPBackend::cudnn_attention ? convert_boolean_attn_mask : convert_boolean_attn_mask_cudnn;
   auto attn_mask = convert_attn_func(attn_mask_, query_.dtype());
   switch (backend) {
@@ -852,6 +887,9 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
         const std::optional<Tensor>& attn_mask_, double dropout_p, bool is_causal,
         const std::optional<Tensor>& dropout_mask, std::optional<double> scale, bool enable_gqa) {
   C10_LOG_API_USAGE_ONCE("torch.sdpa.math_fallback");
+
+  std::cout << "\n[TRACE] C++ _scaled_dot_product_attention_math (attention.cpp:885)" << std::endl;
+  std::cout << "  This is the MATH FALLBACK - will decompose into matmul operations" << std::endl;
   if (query_.is_nested() || key.is_nested() || value.is_nested()) {
     TORCH_CHECK(
         query_.is_contiguous() && key.is_contiguous() &&
@@ -914,6 +952,7 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
 
     // MQA/GQA handling
     auto [key_expanded, value_expanded] = pre_process_group_query_attention_input(query, key_acc, value_acc, enable_gqa);
+    std::cout << "  Step 1: Computing attention scores = query @ key^T" << std::endl;
     auto attn = at::matmul(query, key_expanded.transpose(-2, -1) * scaling_factor);
     if (attn_mask.has_value()) {
       if (at::areAnyTensorSubclassLike({attn, *attn_mask})) {
@@ -922,6 +961,7 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
         attn.add_(*attn_mask);
       }
     }
+    std::cout << "  Step 2: Applying softmax to attention scores" << std::endl;
     attn = at::_safe_softmax(attn, -1);
     if (dropout_p > 0.0) {
       if (dropout_mask.has_value()) {
@@ -930,12 +970,14 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
         TORCH_WARN_ONCE("Dropout mask should only be used for testing purposes.");
         attn = attn.masked_fill(dropout_mask->logical_not(), 0.0);
         auto dropout_scaling = 1.0 / (1 - dropout_p);
+        std::cout << "  Step 3: Computing output = attention_weights @ value (with dropout)" << std::endl;
         return std::make_tuple(at::matmul(attn, value_expanded * dropout_scaling).to(origin_dtype), attn.to(origin_dtype));
       } else {
         attn = at::dropout(attn, dropout_p, true);
       }
     }
 
+    std::cout << "  Step 3: Computing output = attention_weights @ value" << std::endl;
     return std::make_tuple(at::matmul(attn, value_expanded).to(origin_dtype), attn.to(origin_dtype));
 }
 

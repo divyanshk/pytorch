@@ -4665,6 +4665,10 @@ def should_fold(tensor1: torch.Tensor, tensor2: torch.Tensor, is_out: bool) -> b
 def matmul(tensor1, tensor2, *, is_out=False):
     from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
 
+    print(f"\n[TRACE] Python matmul decomposition (torch/_decomp/decompositions.py:4665)")
+    print(f"  tensor1: shape={tuple(tensor1.shape)}, dtype={tensor1.dtype}, device={tensor1.device}")
+    print(f"  tensor2: shape={tuple(tensor2.shape)}, dtype={tensor2.dtype}, device={tensor2.device}")
+
     dim_tensor1 = tensor1.dim()
     dim_tensor2 = tensor2.dim()
     if dim_tensor1 == 0 or dim_tensor2 == 0:
@@ -4672,17 +4676,23 @@ def matmul(tensor1, tensor2, *, is_out=False):
             f"matmul does not support 0-dimensional tensors, got dims: {dim_tensor1} and {dim_tensor2}"
         )
     if dim_tensor1 == 1 and dim_tensor2 == 1:
+        print(f"  → Decomposing to: torch.dot (1D @ 1D)")
         return torch.dot(tensor1, tensor2)
     elif dim_tensor1 == 2 and dim_tensor2 == 1:
+        print(f"  → Decomposing to: torch.mv (2D @ 1D)")
         return torch.mv(tensor1, tensor2)
     elif dim_tensor1 == 1 and dim_tensor2 == 2:
+        print(f"  → Decomposing to: torch.mm (1D @ 2D via unsqueeze)")
         return torch.squeeze(torch.mm(torch.unsqueeze(tensor1, 0), tensor2), 0)
     elif dim_tensor1 == 2 and dim_tensor2 == 2:
+        print(f"  → Decomposing to: torch.mm (2D @ 2D)")
         return torch.mm(tensor1, tensor2)
     elif should_fold(tensor1, tensor2, is_out):
         # dim_tensor1 >=3 && (dim_tensor2 == 1 || dim_tensor2 == 2) ||
         # dim_tensor2 >=3 && (dim_tensor1 == 1 || dim_tensor1 == 2)
         # and some condition on the strides is fulfilled
+
+        print(f"  → Decomposing to: torch.mm with folding (batched optimized path)")
 
         # optimization: use mm instead of bmm by folding the batch of the larger tensor
         # into its leading matrix dimension
@@ -4778,6 +4788,7 @@ def matmul(tensor1, tensor2, *, is_out=False):
         if dim_tensor2 > 1:
             output_shape.append(p)
 
+        print(f"  → Decomposing to: torch.bmm (batch matrix multiply)")
         if vector_rhs:
             return tensor1_expanded.bmm(tensor2_expanded).squeeze(-1).view(output_shape)
         else:

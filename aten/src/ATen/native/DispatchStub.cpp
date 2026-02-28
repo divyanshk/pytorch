@@ -5,6 +5,7 @@
 #include <c10/util/Array.h>
 #include <c10/util/Exception.h>
 #include <c10/util/env.h>
+#include <iostream>
 
 #if !defined(__s390x__) && !defined(__powerpc__)
 #include <cpuinfo.h>
@@ -305,44 +306,62 @@ DispatchResult DispatchStubImpl::try_choose_cpu_impl(
 
   auto capability = static_cast<int>(get_cpu_capability());
   (void)capability;
+
+  // Log CPU capability detection
+  std::cout << "[TRACE] CPU Kernel Dispatch: Selecting implementation" << std::endl;
+  std::cout << "  CPU Capability detected: ";
 #ifdef HAVE_AVX512_CPU_DEFINITION
   if (capability >= static_cast<int>(CPUCapability::AVX512)) {
+    std::cout << "AVX512" << std::endl;
     // Quantization kernels have also been disabled on Windows
     // for AVX512 because some of their tests are flaky on Windows.
     // Ideally, we should have AVX512 kernels for all kernels.
     if (C10_UNLIKELY(!AVX512)) {
       // dispatch to AVX2, since the AVX512 kernel is missing
+      std::cout << "  → Selected: AVX2 (AVX512 kernel not available)" << std::endl;
       return AVX2 != nullptr ? DispatchResult(AVX2) : ErrorType::MissingDeviceKernel;
     } else {
+      std::cout << "  → Selected: AVX512 vectorized kernel" << std::endl;
       return DispatchResult(AVX512);
     }
   }
 #endif
 #ifdef HAVE_AVX2_CPU_DEFINITION
   if (capability >= static_cast<int>(CPUCapability::AVX2)) {
+    std::cout << "AVX2" << std::endl;
+    std::cout << "  → Selected: AVX2 vectorized kernel" << std::endl;
     return AVX2 != nullptr ? DispatchResult(AVX2) : ErrorType::MissingDeviceKernel;
   }
 #endif
 #ifdef HAVE_VSX_CPU_DEFINITION
   if (capability >= static_cast<int>(CPUCapability::VSX)) {
+    std::cout << "VSX" << std::endl;
+    std::cout << "  → Selected: VSX vectorized kernel" << std::endl;
     return VSX != nullptr ? DispatchResult(VSX) : ErrorType::MissingDeviceKernel;
   }
 #endif
 #ifdef HAVE_ZVECTOR_CPU_DEFINITION
   if (capability >= static_cast<int>(CPUCapability::ZVECTOR)) {
+    std::cout << "ZVECTOR" << std::endl;
+    std::cout << "  → Selected: ZVECTOR vectorized kernel" << std::endl;
     return ZVECTOR != nullptr ? DispatchResult(ZVECTOR) : ErrorType::MissingDeviceKernel;
   }
 #endif
 #ifdef HAVE_SVE256_CPU_DEFINITION
   if (capability >= static_cast<int>(CPUCapability::SVE256)) {
+    std::cout << "SVE256" << std::endl;
     if (C10_UNLIKELY(!SVE256)) {
       // dispatch to DEFAULT, since the SVE kernel is missing
+      std::cout << "  → Selected: DEFAULT (SVE256 kernel not available)" << std::endl;
       return DEFAULT != nullptr ? DispatchResult(DEFAULT) : ErrorType::MissingDeviceKernel;
     } else {
+      std::cout << "  → Selected: SVE256 vectorized kernel" << std::endl;
       return DispatchResult(SVE256);
     }
   }
 #endif
+  std::cout << "DEFAULT" << std::endl;
+  std::cout << "  → Selected: DEFAULT (scalar fallback)" << std::endl;
   return DEFAULT != nullptr ? DispatchResult(DEFAULT) : ErrorType::MissingDeviceKernel;
 }
 

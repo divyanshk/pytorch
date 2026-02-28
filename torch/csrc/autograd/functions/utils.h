@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <vector>
+#include <iostream>
 
 namespace torch::autograd {
 
@@ -67,6 +68,14 @@ inline void set_history(
     const at::Tensor& variable,
     const std::shared_ptr<Node>& grad_fn) {
   TORCH_CHECK(grad_fn != nullptr);
+
+  // Custom instrumentation for learning
+  std::cout << "\n[TRACE] Autograd: Registering backward function (torch/csrc/autograd/functions/utils.h:66)" << std::endl;
+  std::cout << "  Backward function: " << grad_fn->name() << std::endl;
+  if (variable.defined()) {
+    std::cout << "  Output tensor: shape=" << variable.sizes() << ", dtype=" << variable.scalar_type() << std::endl;
+  }
+
   if (variable.defined()) {
     // If the codegen triggers this, you most likely want to add your newly
     // added function to the DONT_REQUIRE_DERIVATIVE list in

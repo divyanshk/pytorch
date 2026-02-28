@@ -153,9 +153,15 @@ void gemm(
     const double *b, int64_t ldb,
     const double beta,
     double *c, int64_t ldc) {
+  std::cout << "\n[TRACE] CPU BLAS gemm<double> (aten/src/ATen/native/CPUBlas.cpp:148)" << std::endl;
+  std::cout << "  Matrix dimensions: M=" << m << ", N=" << n << ", K=" << k << std::endl;
+  std::cout << "  alpha=" << alpha << ", beta=" << beta << std::endl;
+  std::cout << "  TransposeA=" << (transa == TransposeType::NoTranspose ? "N" : "T")
+            << ", TransposeB=" << (transb == TransposeType::NoTranspose ? "N" : "T") << std::endl;
   internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
 #if AT_BUILD_WITH_BLAS()
   if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+    std::cout << "  → Backend: External BLAS library (dgemm_)" << std::endl;
     int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
     double alpha_ = alpha, beta_ = beta;
     #if C10_IOS
@@ -183,6 +189,7 @@ void gemm(
     return;
   }
 #endif
+  std::cout << "  → Backend: PyTorch gemm_stub (fallback)" << std::endl;
   gemm_stub(
       at::kCPU, at::kDouble,
       transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
@@ -208,14 +215,21 @@ void gemm(
     const float *b, int64_t ldb,
     const float beta,
     float *c, int64_t ldc) {
+  std::cout << "\n[TRACE] CPU BLAS gemm<float> (aten/src/ATen/native/CPUBlas.cpp:203)" << std::endl;
+  std::cout << "  Matrix dimensions: M=" << m << ", N=" << n << ", K=" << k << std::endl;
+  std::cout << "  alpha=" << alpha << ", beta=" << beta << std::endl;
+  std::cout << "  TransposeA=" << (transa == TransposeType::NoTranspose ? "N" : "T")
+            << ", TransposeB=" << (transb == TransposeType::NoTranspose ? "N" : "T") << std::endl;
   internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
 #if AT_MKLDNN_ENABLED()
    if (mkldnn_reduced_f32_gemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)) {
+     std::cout << "  → Backend: MKL-DNN optimized path" << std::endl;
      return;
    }
 #endif
 #if AT_BUILD_WITH_BLAS()
   if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+    std::cout << "  → Backend: External BLAS library (sgemm_)" << std::endl;
     int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
     float alpha_ = alpha, beta_ = beta;
     #if C10_IOS
@@ -243,6 +257,7 @@ void gemm(
     return;
   }
 #endif
+  std::cout << "  → Backend: PyTorch gemm_stub (fallback)" << std::endl;
   gemm_stub(
       at::kCPU, at::kFloat,
       transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
